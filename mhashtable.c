@@ -1,6 +1,6 @@
 /*
  * mhashtable.c -- implementation part of a simple and thread-safe hashtable library
- * version 0.9.0, May 28, 2025
+ * version 0.9.1, May 29, 2025
  *
  * License: zlib License
  *
@@ -208,7 +208,7 @@ static HashTable* ht_create_without_register (size_t size) {
 		size = adjusted;
 	}
 
-	HashTable* ht = malloc(sizeof(HashTable));
+	HashTable* ht = calloc(1, sizeof(HashTable));
 	if (ht == NULL) return NULL;
 
 	ht->buckets = calloc(size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
@@ -334,7 +334,7 @@ void _ht_destroy_without_value (HashTable* ht, const char* file, unsigned int li
 
 static void ht_rehash (HashTable* ht) {
 	size_t new_size = ht->size * 2;
-	Entry** new_buckets = calloc(new_size, sizeof(Entry*));
+	Entry** new_buckets = calloc(new_size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
 	if (new_buckets == NULL) {
 		fprintf(stderr, "Failed to allocate memory for rehashing.\nFile: %s   Line: %u\n", __FILE__, __LINE__);
 		return;
@@ -383,7 +383,7 @@ static bool ht_set_raw_without_lock (HashTable* ht, uintptr_t key, void* value_d
 	}
 
     /* 新規追加 */
-	Entry* new_entry = malloc(sizeof(Entry));
+	Entry* new_entry = calloc(1, sizeof(Entry));
 	if (new_entry == NULL) return false;
 
 	new_entry->key = key;
@@ -427,7 +427,7 @@ static bool ht_set_without_lock (HashTable* ht, uintptr_t key, void* value_data,
 	/* 既存キーを更新（上書き） */
 	while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
 		if (entry->key == key) {
-			void* new_value = malloc(value_size);
+			void* new_value = calloc(1, value_size);
 			if (new_value == NULL) return false;
 
 			free(entry->value);
@@ -440,11 +440,11 @@ static bool ht_set_without_lock (HashTable* ht, uintptr_t key, void* value_data,
 	}
 
     /* 新規追加 */
-	Entry* new_entry = malloc(sizeof(Entry));
+	Entry* new_entry = calloc(1, sizeof(Entry));
 	if (new_entry == NULL) return false;
 
 	new_entry->key = key;
-	new_entry->value = malloc(value_size);
+	new_entry->value = calloc(1, value_size);
 	if (new_entry->value == NULL) {
 		free(new_entry);
 		return false;
@@ -501,7 +501,7 @@ void** _ht_all_get (HashTable* ht, size_t* out_count, const char* file, unsigned
 		return NULL;
 	}
 
-	void** values = malloc(ht->count * sizeof(void*));
+	void** values = calloc(ht->count, sizeof(void*));
 	if (values == NULL) {
 		ht_unlock();
 		return NULL;
