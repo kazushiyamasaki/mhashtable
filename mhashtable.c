@@ -71,6 +71,8 @@ static HashTable* all_get_arr_entries = NULL;
 
 
 #if defined (_POSIX_THREADS) && (_POSIX_THREADS > 0)
+	#define PTHREAD_AVAILABLE
+
 	#include <pthread.h>
 	static pthread_mutex_t ht_lock_mutex = PTHREAD_MUTEX_INITIALIZER;
 #elif defined (_WIN32)
@@ -87,6 +89,8 @@ static HashTable* all_get_arr_entries = NULL;
 		return true;
 	}
 #elif defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
+	#define STDSTOMIC_AVAILABLE
+
 	#include <stdatomic.h>
 	static atomic_flag ht_lock_flag = ATOMIC_FLAG_INIT;
 #else
@@ -95,13 +99,13 @@ static HashTable* all_get_arr_entries = NULL;
 
 
 void ht_lock (void) {
-#if defined (_POSIX_THREADS) && (_POSIX_THREADS > 0)
+#ifdef PTHREAD_AVAILABLE
 	pthread_mutex_lock(&ht_lock_mutex);
 #elif defined (_WIN32)
 	InitOnceExecuteOnce(&cs_init_once, InitCriticalSection, NULL, NULL);
 
 	EnterCriticalSection(&ht_lock_cs);
-#elif defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
+#elif defined (STDSTOMIC_AVAILABLE)
 	while (atomic_flag_test_and_set_explicit(&ht_lock_flag, memory_order_acquire)) {
 		SPIN_WAIT();
 	}
@@ -115,11 +119,11 @@ void ht_lock (void) {
 
 
 void ht_unlock (void) {
-#if defined (_POSIX_THREADS) && (_POSIX_THREADS > 0)
+#ifdef PTHREAD_AVAILABLE
 	pthread_mutex_unlock(&ht_lock_mutex);
 #elif defined (_WIN32)
 	LeaveCriticalSection(&ht_lock_cs);
-#elif defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
+#elif defined (STDSTOMIC_AVAILABLE)
 	atomic_flag_clear_explicit(&ht_lock_flag, memory_order_release);
 #else
 	ht_busy = false;
@@ -582,7 +586,7 @@ static void quit (void) {
 	_ht_destroy(ht_entries, __FILE__, __LINE__);
 	ht_entries = NULL;
 
-#if defined (_POSIX_THREADS) && (_POSIX_THREADS > 0)
+#ifdef PTHREAD_AVAILABLE
 	pthread_mutex_destroy(&ht_lock_mutex);
 #elif defined (_WIN32)
 	DeleteCriticalSection(&ht_lock_cs);
