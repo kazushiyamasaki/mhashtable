@@ -1,6 +1,6 @@
 /*
  * mhashtable.c -- implementation part of a simple and thread-safe hashtable library
- * version 0.9.1, May 29, 2025
+ * version 0.9.2, May 31, 2025
  *
  * License: zlib License
  *
@@ -160,8 +160,8 @@ uint32_t wang_hash32 (uint32_t key) {
 }
 
 
-static uintptr_t wang_hash (uintptr_t key) {
-#if UINTPTR_MAX > UINT32_MAX
+static key_type wang_hash (key_type key) {
+#if KEY_TYPE_MAX > UINT32_MAX
 	return wang_hash64(key);
 #else
 	return wang_hash32(key);
@@ -169,9 +169,9 @@ static uintptr_t wang_hash (uintptr_t key) {
 }
 
 
-static size_t hash_key (uintptr_t key, size_t size) {
-	uintptr_t hash = wang_hash(key);
-#if UINTPTR_MAX > UINT32_MAX
+static size_t hash_key (key_type key, size_t size) {
+	key_type hash = wang_hash(key);
+#if KEY_TYPE_MAX > UINT32_MAX
 	return (hash ^ (hash >> 32)) & (size - 1);
 #else
 	return (hash ^ (hash >> 16)) & (size - 1);
@@ -227,7 +227,7 @@ static HashTable* ht_create_without_register (size_t size) {
 }
 
 
-static bool ht_set_without_lock (HashTable* ht, uintptr_t key, void* value_data, size_t value_size, const char* file, unsigned int line);
+static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, unsigned int line);
 
 static HashTable* ht_create_without_lock (size_t size, const char* file, unsigned int line) {
 	HashTable* ht = ht_create_without_register(size);
@@ -245,7 +245,7 @@ static HashTable* ht_create_without_lock (size_t size, const char* file, unsigne
 #endif
 	};
 
-	if (!ht_set_without_lock(ht_entries, (uintptr_t)ht, &ht_entry, sizeof(HtTrackEntry), file, line))
+	if (!ht_set_without_lock(ht_entries, (key_type)ht, &ht_entry, sizeof(HtTrackEntry), file, line))
 		fprintf(stderr, "Failed to set hashtable in hashtable entries.\nFile: %s   Line: %u\n", file, line);
 
 	return ht;
@@ -260,7 +260,7 @@ HashTable* _ht_create (size_t size, const char* file, unsigned int line) {
 }
 
 
-static void* ht_get_without_lock (HashTable* ht, uintptr_t key, const char* file, unsigned int line);
+static void* ht_get_without_lock (HashTable* ht, key_type key, const char* file, unsigned int line);
 
 static bool ht_pre_execution_check (HashTable* ht, const char* file, unsigned int line) {
 	if (ht == NULL) {
@@ -274,7 +274,7 @@ static bool ht_pre_execution_check (HashTable* ht, const char* file, unsigned in
 	}
 
 	if (ht != ht_entries) {
-		HtTrackEntry* ht_entry = ht_get_without_lock(ht_entries, (uintptr_t)ht, file, line);
+		HtTrackEntry* ht_entry = ht_get_without_lock(ht_entries, (key_type)ht, file, line);
 		if (ht_entry == NULL) {
 			fprintf(stderr, "Hashtable does not exist in hashtable entries.\nFile: %s   Line: %u\n", file, line);
 			return false;
@@ -300,7 +300,7 @@ static void ht_destroy_value_choose_delete (HashTable* ht, bool value_delete) {
 }
 
 
-static bool ht_delete_without_lock (HashTable* ht, uintptr_t key, const char* file, unsigned int line);
+static bool ht_delete_without_lock (HashTable* ht, key_type key, const char* file, unsigned int line);
 
 void _ht_destroy (HashTable* ht, const char* file, unsigned int line) {
 	ht_lock();
@@ -313,7 +313,7 @@ void _ht_destroy (HashTable* ht, const char* file, unsigned int line) {
 	ht_destroy_value_choose_delete(ht, true);
 
 	if (ht != ht_entries)
-		ht_delete_without_lock(ht_entries, (uintptr_t)ht, file, line);
+		ht_delete_without_lock(ht_entries, (key_type)ht, file, line);
 
 	ht_unlock();
 }
@@ -330,7 +330,7 @@ void _ht_destroy_without_value (HashTable* ht, const char* file, unsigned int li
 	ht_destroy_value_choose_delete(ht, false);
 
 	if (ht != ht_entries)
-		ht_delete_without_lock(ht_entries, (uintptr_t)ht, file, line);
+		ht_delete_without_lock(ht_entries, (key_type)ht, file, line);
 
 	ht_unlock();
 }
@@ -361,7 +361,7 @@ static void ht_rehash (HashTable* ht) {
 }
 
 
-static bool ht_set_raw_without_lock (HashTable* ht, uintptr_t key, void* value_data, const char* file, unsigned int line) {
+static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_data, const char* file, unsigned int line) {
 	if (!ht_pre_execution_check(ht, file, line))
 		return false;
 
@@ -400,7 +400,7 @@ static bool ht_set_raw_without_lock (HashTable* ht, uintptr_t key, void* value_d
 }
 
 
-bool _ht_set_raw (HashTable* ht, uintptr_t key, void* value_data, const char* file, unsigned int line) {
+bool _ht_set_raw (HashTable* ht, key_type key, void* value_data, const char* file, unsigned int line) {
 	ht_lock();
 	bool result = ht_set_raw_without_lock(ht, key, value_data, file, line);
 	ht_unlock();
@@ -408,7 +408,7 @@ bool _ht_set_raw (HashTable* ht, uintptr_t key, void* value_data, const char* fi
 }
 
 
-static bool ht_set_without_lock (HashTable* ht, uintptr_t key, void* value_data, size_t value_size, const char* file, unsigned int line) {
+static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, unsigned int line) {
 	if (!ht_pre_execution_check(ht, file, line))
 		return false;
 
@@ -462,7 +462,7 @@ static bool ht_set_without_lock (HashTable* ht, uintptr_t key, void* value_data,
 }
 
 
-bool _ht_set (HashTable* ht, uintptr_t key, void* value_data, size_t value_size, const char* file, unsigned int line) {
+bool _ht_set (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, unsigned int line) {
 	ht_lock();
 	bool result = ht_set_without_lock(ht, key, value_data, value_size, file, line);
 	ht_unlock();
@@ -470,7 +470,7 @@ bool _ht_set (HashTable* ht, uintptr_t key, void* value_data, size_t value_size,
 }
 
 
-static void* ht_get_without_lock (HashTable* ht, uintptr_t key, const char* file, unsigned int line) {
+static void* ht_get_without_lock (HashTable* ht, key_type key, const char* file, unsigned int line) {
 	if (!ht_pre_execution_check(ht, file, line))
 		return NULL;
 
@@ -487,7 +487,7 @@ static void* ht_get_without_lock (HashTable* ht, uintptr_t key, const char* file
 }
 
 
-void* _ht_get (HashTable* ht, uintptr_t key, const char* file, unsigned int line) {
+void* _ht_get (HashTable* ht, key_type key, const char* file, unsigned int line) {
 	ht_lock();
 	void* result = ht_get_without_lock(ht, key, file, line);
 	ht_unlock();
@@ -520,7 +520,7 @@ void** _ht_all_get (HashTable* ht, size_t* out_count, const char* file, unsigned
 		}
 	}
 
-	ht_set_raw_without_lock(all_get_arr_entries, (uintptr_t)values, values, file, line);
+	ht_set_raw_without_lock(all_get_arr_entries, (key_type)values, values, file, line);
 
 	*out_count = idx;  /* 正常なら ht->count と等しい */
 	ht_unlock();
@@ -529,11 +529,11 @@ void** _ht_all_get (HashTable* ht, size_t* out_count, const char* file, unsigned
 
 
 bool _ht_all_release_arr (void* values, const char* file, unsigned int line) {
-	return _ht_delete(all_get_arr_entries, (uintptr_t)values, file, line);
+	return _ht_delete(all_get_arr_entries, (key_type)values, file, line);
 }
 
 
-static bool ht_delete_without_lock (HashTable* ht, uintptr_t key, const char* file, unsigned int line) {
+static bool ht_delete_without_lock (HashTable* ht, key_type key, const char* file, unsigned int line) {
 	if (!ht_pre_execution_check(ht, file, line))
 		return false;
 
@@ -560,7 +560,7 @@ static bool ht_delete_without_lock (HashTable* ht, uintptr_t key, const char* fi
 }
 
 
-bool _ht_delete (HashTable* ht, uintptr_t key, const char* file, unsigned int line) {
+bool _ht_delete (HashTable* ht, key_type key, const char* file, unsigned int line) {
 	ht_lock();
 	bool result = ht_delete_without_lock(ht, key, file, line);
 	ht_unlock();

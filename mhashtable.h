@@ -1,6 +1,6 @@
 /*
  * mhashtable.h -- interface of a simple and thread-safe hashtable library
- * version 0.9.1, May 29, 2025
+ * version 0.9.2, May 31, 2025
  *
  * License: zlib License
  *
@@ -82,8 +82,17 @@
 #define ht_delete(ht, key) _ht_delete((ht), (key), __FILE__, __LINE__)
 
 
+/*
+ * key_type is based on uintptr_t to uniformly handle both integer and pointer values.
+ * It is not guaranteed to always represent a pointer, so validation is required before
+ * using it as such.
+ */
+typedef uintptr_t key_type;
+#define KEY_TYPE_MAX UINTPTR_MAX
+
+
 typedef struct Entry {
-	uintptr_t key;
+	key_type key;
 	void* value;
 	struct Entry* next;
 } Entry;
@@ -134,7 +143,7 @@ extern void _ht_destroy_without_value (HashTable* ht, const char* file, unsigned
  * @param line: line number of the caller, usually specified with __LINE__
  * @return: true if successful, false otherwise
  */
-extern bool _ht_set (HashTable* ht, uintptr_t key, void* value_data, size_t value_size, const char* file, unsigned int line);
+extern bool _ht_set (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, unsigned int line);
 
 /*
  * _ht_set_raw
@@ -146,7 +155,7 @@ extern bool _ht_set (HashTable* ht, uintptr_t key, void* value_data, size_t valu
  * @return: true if successful, false otherwise
  * @note: The use of this function is not recommended. Since this function sets the specified pointer directly as a value without copying the data, improper use of the ht_destroy and ht_destroy_without_value functions depending on the situation may lead to memory leaks or double frees
  */
-extern bool _ht_set_raw (HashTable* ht, uintptr_t key, void* value_data, const char* file, unsigned int line);
+extern bool _ht_set_raw (HashTable* ht, key_type key, void* value_data, const char* file, unsigned int line);
 
 /*
  * _ht_get
@@ -156,7 +165,7 @@ extern bool _ht_set_raw (HashTable* ht, uintptr_t key, void* value_data, const c
  * @param line: line number of the caller, usually specified with __LINE__
  * @return: pointer to the value data, or NULL if not found or an error occurred
  */
-extern void* _ht_get (HashTable* ht, uintptr_t key, const char* file, unsigned int line);
+extern void* _ht_get (HashTable* ht, key_type key, const char* file, unsigned int line);
 
 /*
  * _ht_all_get
@@ -187,7 +196,7 @@ extern bool _ht_all_release_arr (void* values, const char* file, unsigned int li
  * @param line: line number of the caller, usually specified with __LINE__
  * @return: true if successful, false otherwise
  */
-extern bool _ht_delete (HashTable* ht, uintptr_t key, const char* file, unsigned int line);
+extern bool _ht_delete (HashTable* ht, key_type key, const char* file, unsigned int line);
 
 
 /*
