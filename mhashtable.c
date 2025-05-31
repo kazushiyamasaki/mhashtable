@@ -38,6 +38,11 @@
 #endif
 
 
+#if !defined(_WIN32_WINNT) || (_WIN32_WINNT < 0x0600)
+	#error "This program requires Windows Vista or later. Define _WIN32_WINNT accordingly."
+#endif
+
+
 #define LOAD_FACTOR 0.8
 
 #define HT_ENTRIES_INITIAL_SIZE 256
@@ -89,12 +94,19 @@ static HashTable* all_get_arr_entries = NULL;
 	static CRITICAL_SECTION ht_lock_cs;
 
 	static BOOL CALLBACK InitCriticalSection (PINIT_ONCE InitOnce, PVOID Parameter, PVOID *Context) {
-		(void)InitOnce;
-		(void)Parameter;
-		(void)Context;
-
+		(void)InitOnce;  (void)Parameter;  (void)Context;
 		InitializeCriticalSection(&ht_lock_cs);
 		return true;
+	}
+
+	static bool winver_checked = false;
+	static bool is_windows_vista_or_later (void) {
+		OSVERSIONINFO osvi = {0};
+		osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);  /* 必要な初期化 */
+		if (!GetVersionEx(&osvi)) {
+			return false;
+		}
+		return (osvi.dwMajorVersion >= 6);
 	}
 #elif defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined (__STDC_NO_ATOMICS__)
 	#define STDSTOMIC_AVAILABLE
@@ -141,6 +153,13 @@ void ht_lock (void) {
 #elif defined (PTHREAD_AVAILABLE)
 	pthread_mutex_lock(&ht_lock_mutex);
 #elif defined (_WIN32)
+	if (winver_checked == false) {
+		if (!is_windows_vista_or_later())
+			exit(EXIT_FAILURE);
+		else
+			winver_checked = true;
+	}  /* なるべく実行回数を減らしたいだけなので、複数回実行されても問題はない */
+
 	InitOnceExecuteOnce(&cs_init_once, InitCriticalSection, NULL, NULL);
 
 	EnterCriticalSection(&ht_lock_cs);
