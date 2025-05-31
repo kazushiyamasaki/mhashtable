@@ -102,7 +102,19 @@ static HashTable* all_get_arr_entries = NULL;
 	#include <stdatomic.h>
 	static atomic_flag ht_lock_flag = ATOMIC_FLAG_INIT;
 #elif defined (__GNUC__)
-	static volatile int ht_lock_int = 0;
+	#if defined (__has_builtin)
+		#if __has_builtin (__sync_lock_test_and_set)
+			#define GCC_SYNC_BUILTIN_AVAILABLE
+
+			static volatile int ht_lock_int = 0;
+		#else
+			#error "No valid locking mechanism found on this platform."
+		#endif
+	#else
+		#define GCC_SYNC_BUILTIN_AVAILABLE
+
+		static volatile int ht_lock_int = 0;
+	#endif
 #else
 	#error "No valid locking mechanism found on this platform."
 #endif
@@ -136,7 +148,7 @@ void ht_lock (void) {
 	while (atomic_flag_test_and_set_explicit(&ht_lock_flag, memory_order_acquire)) {
 		SPIN_WAIT();
 	}
-#elif defined (__GNUC__)
+#elif defined (GCC_SYNC_BUILTIN_AVAILABLE)
 	while (__sync_lock_test_and_set(&ht_lock_int, 1)) {
 		SPIN_WAIT();
 	}
@@ -153,7 +165,7 @@ void ht_unlock (void) {
 	LeaveCriticalSection(&ht_lock_cs);
 #elif defined (STDSTOMIC_AVAILABLE)
 	atomic_flag_clear_explicit(&ht_lock_flag, memory_order_release);
-#elif defined (__GNUC__)
+#elif defined (GCC_SYNC_BUILTIN_AVAILABLE)
     __sync_lock_release(&ht_lock_int);
 #endif
 }
