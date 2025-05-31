@@ -60,17 +60,20 @@ static HashTable* all_get_arr_entries = NULL;
 #endif
 
 
-#if (!defined (_POSIX_THREADS) || (_POSIX_THREADS <= 0)) && !defined (_WIN32)
-	#if (defined (__x86_64__) || defined (__amd64__) || defined (_M_X64) || defined (__i386__) || defined (_M_IX86))
-		#include <emmintrin.h>
-		#define SPIN_WAIT() _mm_pause()
-	#else
-		#define SPIN_WAIT() do { volatile size_t i; for (i = 0; i < 1000; ++i) { __asm__ __volatile__ ("" ::: "memory"); } } while (0)
-	#endif
-#endif
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_THREADS__)
+	#define C11_THREADS_AVAILABLE
 
+	#include <threads.h>
+	static mtx_t ht_lock_mutex;
+	static once_flag mtx_init_once = ONCE_FLAG_INIT;
 
-#if defined (_POSIX_THREADS) && (_POSIX_THREADS > 0)
+	static void init_mtx (void) {
+		if (mtx_init(&ht_lock_mutex, mtx_plain) != thrd_success) {
+			fprintf(stderr, "Failed to initialize the mutex!\nFile: %s   Line: %u\n", __FILE__, __LINE__);
+			exit(EXIT_FAILURE);
+		}
+	}
+#elif defined (_POSIX_THREADS) && (_POSIX_THREADS > 0)
 	#define PTHREAD_AVAILABLE
 
 	#include <pthread.h>
@@ -93,13 +96,32 @@ static HashTable* all_get_arr_entries = NULL;
 
 	#include <stdatomic.h>
 	static atomic_flag ht_lock_flag = ATOMIC_FLAG_INIT;
+#elif defined (__GNUC__)
+	static volatile int ht_lock_int = 0;
 #else
 	static volatile bool ht_busy = false;
 #endif
 
 
+#if !defined (C11_THREADS_AVAILABLE) && !defined(PTHREAD_AVAILABLE) && !defined (_WIN32)
+	#if (defined (__x86_64__) || defined (__amd64__) || defined (_M_X64) || defined (__i386__) || defined (_M_IX86))
+		#include <emmintrin.h>
+		#define SPIN_WAIT() _mm_pause()
+	#elif defined (_POSIX_PRIORITY_SCHEDULING)
+		#include <sched.h>
+		#define SPIN_WAIT() sched_yield()
+	#else
+		#define SPIN_WAIT() do { volatile size_t i; for (i = 0; i < 1000; ++i) { __asm__ __volatile__ ("" ::: "memory"); } } while (0)
+	#endif
+#endif
+
+
 void ht_lock (void) {
-#ifdef PTHREAD_AVAILABLE
+#ifdef C11_THREADS_AVAILABLE
+	call_once(&mtx_init_once, init_mtx);
+
+	mtx_lock(&ht_lock_mutex);
+#elif defined (PTHREAD_AVAILABLE)
 	pthread_mutex_lock(&ht_lock_mutex);
 #elif defined (_WIN32)
 	InitOnceExecuteOnce(&cs_init_once, InitCriticalSection, NULL, NULL);
@@ -107,6 +129,10 @@ void ht_lock (void) {
 	EnterCriticalSection(&ht_lock_cs);
 #elif defined (STDSTOMIC_AVAILABLE)
 	while (atomic_flag_test_and_set_explicit(&ht_lock_flag, memory_order_acquire)) {
+		SPIN_WAIT();
+	}
+#elif defined (__GNUC__)
+	while (__sync_lock_test_and_set(&ht_lock_int, 1)) {
 		SPIN_WAIT();
 	}
 #else
@@ -119,14 +145,18 @@ void ht_lock (void) {
 
 
 void ht_unlock (void) {
-#ifdef PTHREAD_AVAILABLE
+#ifdef C11_THREADS_AVAILABLE
+	mtx_unlock(&ht_lock_mutex);
+#elif defined (PTHREAD_AVAILABLE)
 	pthread_mutex_unlock(&ht_lock_mutex);
 #elif defined (_WIN32)
 	LeaveCriticalSection(&ht_lock_cs);
 #elif defined (STDSTOMIC_AVAILABLE)
 	atomic_flag_clear_explicit(&ht_lock_flag, memory_order_release);
+#elif defined (__GNUC__)
+    __sync_lock_release(&ht_lock_int);
 #else
-	ht_busy = false;
+    ht_busy = false;
 #endif
 }
 
@@ -586,7 +616,9 @@ static void quit (void) {
 	_ht_destroy(ht_entries, __FILE__, __LINE__);
 	ht_entries = NULL;
 
-#ifdef PTHREAD_AVAILABLE
+#ifdef C11_THREADS_AVAILABLE
+	mtx_destroy(&ht_lock_mutex);
+#elif defined (PTHREAD_AVAILABLE)
 	pthread_mutex_destroy(&ht_lock_mutex);
 #elif defined (_WIN32)
 	DeleteCriticalSection(&ht_lock_cs);
