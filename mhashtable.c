@@ -33,6 +33,11 @@
 #include <string.h>
 
 
+#if !defined (__STDC_VERSION__) || (__STDC_VERSION__ < 199901L)
+	#error "This program requires C99 or higher."
+#endif
+
+
 #define LOAD_FACTOR 0.8
 
 #define HT_ENTRIES_INITIAL_SIZE 256
@@ -60,7 +65,7 @@ static HashTable* all_get_arr_entries = NULL;
 #endif
 
 
-#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_THREADS__)
+#if defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined (__STDC_NO_THREADS__)
 	#define C11_THREADS_AVAILABLE
 
 	#include <threads.h>
@@ -91,7 +96,7 @@ static HashTable* all_get_arr_entries = NULL;
 		InitializeCriticalSection(&ht_lock_cs);
 		return true;
 	}
-#elif defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined(__STDC_NO_ATOMICS__)
+#elif defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L) && !defined (__STDC_NO_ATOMICS__)
 	#define STDSTOMIC_AVAILABLE
 
 	#include <stdatomic.h>
@@ -99,11 +104,11 @@ static HashTable* all_get_arr_entries = NULL;
 #elif defined (__GNUC__)
 	static volatile int ht_lock_int = 0;
 #else
-	static volatile bool ht_busy = false;
+	#error "No valid locking mechanism found on this platform."
 #endif
 
 
-#if !defined (C11_THREADS_AVAILABLE) && !defined(PTHREAD_AVAILABLE) && !defined (_WIN32)
+#if !defined (C11_THREADS_AVAILABLE) && !defined (PTHREAD_AVAILABLE) && !defined (_WIN32)
 	#if (defined (__x86_64__) || defined (__amd64__) || defined (_M_X64) || defined (__i386__) || defined (_M_IX86))
 		#include <emmintrin.h>
 		#define SPIN_WAIT() _mm_pause()
@@ -135,11 +140,6 @@ void ht_lock (void) {
 	while (__sync_lock_test_and_set(&ht_lock_int, 1)) {
 		SPIN_WAIT();
 	}
-#else
-	while (ht_busy) {
-		SPIN_WAIT();
-	}
-	ht_busy = true;
 #endif
 }
 
@@ -155,8 +155,6 @@ void ht_unlock (void) {
 	atomic_flag_clear_explicit(&ht_lock_flag, memory_order_release);
 #elif defined (__GNUC__)
     __sync_lock_release(&ht_lock_int);
-#else
-    ht_busy = false;
 #endif
 }
 
