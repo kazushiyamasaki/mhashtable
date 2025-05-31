@@ -1,6 +1,6 @@
 /*
  * mhashtable.c -- implementation part of a simple and thread-safe hashtable library
- * version 0.9.2, May 31, 2025
+ * version 0.9.3, June 1, 2025
  *
  * License: zlib License
  *
@@ -64,6 +64,15 @@ static HashTable* ht_entries = NULL;
 static HashTable* all_get_arr_entries = NULL;
 
 
+#ifdef __GNUC__
+	#define LIKELY(x)   __builtin_expect(!!(x), 1)
+	#define UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+	#define LIKELY(x)   (x)
+	#define UNLIKELY(x) (x)
+#endif
+
+
 
 #if defined (__unix__) || defined (__linux__) || defined (__APPLE__)
 	#include <unistd.h>
@@ -78,7 +87,7 @@ static HashTable* all_get_arr_entries = NULL;
 	static once_flag mtx_init_once = ONCE_FLAG_INIT;
 
 	static void init_mtx (void) {
-		if (mtx_init(&ht_lock_mutex, mtx_plain) != thrd_success) {
+		if (UNLIKELY(mtx_init(&ht_lock_mutex, mtx_plain) != thrd_success)) {
 			fprintf(stderr, "Failed to initialize the mutex!\nFile: %s   Line: %u\n", __FILE__, __LINE__);
 			exit(EXIT_FAILURE);
 		}
@@ -103,7 +112,7 @@ static HashTable* all_get_arr_entries = NULL;
 	static bool is_windows_vista_or_later (void) {
 		OSVERSIONINFO osvi = {0};
 		osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);  /* 必要な初期化 */
-		if (!GetVersionEx(&osvi)) {
+		if (UNLIKELY(!GetVersionEx(&osvi))) {
 			return false;
 		}
 		return (osvi.dwMajorVersion >= 6);
@@ -153,7 +162,7 @@ void ht_lock (void) {
 #elif defined (PTHREAD_AVAILABLE)
 	pthread_mutex_lock(&ht_lock_mutex);
 #elif defined (_WIN32)
-	if (winver_checked == false) {
+	if (UNLIKELY(winver_checked == false)) {
 		if (!is_windows_vista_or_later())
 			exit(EXIT_FAILURE);
 		else
@@ -246,9 +255,9 @@ static HashTable* ht_create_without_lock (size_t size, const char* file, unsigne
 static void init (void) {
 	for (size_t i = 0; i < HT_ENTRIES_TRIAL; i++) {
 		ht_entries = ht_create_without_register(HT_ENTRIES_INITIAL_SIZE);
-		if (ht_entries != NULL) break;
+		if (LIKELY(ht_entries != NULL)) break;
 	}
-	if (ht_entries == NULL) {
+	if (UNLIKELY(ht_entries == NULL)) {
 		fprintf(stderr, "Failed to initialize hashtable library.\nFile: %s   Line: %u\n", __FILE__, __LINE__);
 		ht_unlock();
 		exit(EXIT_FAILURE);
@@ -257,7 +266,7 @@ static void init (void) {
 	atexit(quit);
 
 	all_get_arr_entries = ht_create_without_lock(ALL_GET_ARR_INITIAL_SIZE, __FILE__, __LINE__);
-	if (all_get_arr_entries == NULL)
+	if (UNLIKELY(all_get_arr_entries == NULL))
 		fprintf(stderr, "Failed to prepare the hashtable that manages the array returned by the ht_all_get function.\nFile: %s   Line: %u\n", __FILE__, __LINE__);
 }
 
@@ -272,10 +281,10 @@ static HashTable* ht_create_without_register (size_t size) {
 	}
 
 	HashTable* ht = calloc(1, sizeof(HashTable));
-	if (ht == NULL) return NULL;
+	if (UNLIKELY(ht == NULL)) return NULL;
 
 	ht->buckets = calloc(size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
-	if (ht->buckets == NULL) {
+	if (UNLIKELY(ht->buckets == NULL)) {
 		free(ht);
 		return NULL;
 	}
@@ -291,7 +300,7 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 static HashTable* ht_create_without_lock (size_t size, const char* file, unsigned int line) {
 	HashTable* ht = ht_create_without_register(size);
 
-	if (ht_entries == NULL) {
+	if (UNLIKELY(ht_entries == NULL)) {
 		init();
 	}
 
@@ -304,7 +313,7 @@ static HashTable* ht_create_without_lock (size_t size, const char* file, unsigne
 #endif
 	};
 
-	if (!ht_set_without_lock(ht_entries, (key_type)ht, &ht_entry, sizeof(HtTrackEntry), file, line))
+	if (UNLIKELY(!ht_set_without_lock(ht_entries, (key_type)ht, &ht_entry, sizeof(HtTrackEntry), file, line)))
 		fprintf(stderr, "Failed to set hashtable in hashtable entries.\nFile: %s   Line: %u\n", file, line);
 
 	return ht;
@@ -327,7 +336,7 @@ static bool ht_pre_execution_check (HashTable* ht, const char* file, unsigned in
 		return false;
 	}
 
-	if (ht_entries == NULL) {
+	if (UNLIKELY(ht_entries == NULL)) {
 		fprintf(stderr, "Hashtable entries are NULL.\nFile: %s   Line: %u\n", file, line);
 		return false;
 	}
@@ -398,7 +407,7 @@ void _ht_destroy_without_value (HashTable* ht, const char* file, unsigned int li
 static void ht_rehash (HashTable* ht) {
 	size_t new_size = ht->size * 2;
 	Entry** new_buckets = calloc(new_size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
-	if (new_buckets == NULL) {
+	if (UNLIKELY(new_buckets == NULL)) {
 		fprintf(stderr, "Failed to allocate memory for rehashing.\nFile: %s   Line: %u\n", __FILE__, __LINE__);
 		return;
 	}
@@ -429,7 +438,7 @@ static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_da
 		return false;
 	}
 
-	if ((double)ht->count / ht->size > LOAD_FACTOR)
+	if (UNLIKELY(((double)ht->count / ht->size) > LOAD_FACTOR))
 		ht_rehash(ht);
 
 	size_t index = hash_key(key, ht->size);
@@ -447,7 +456,7 @@ static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_da
 
     /* 新規追加 */
 	Entry* new_entry = calloc(1, sizeof(Entry));
-	if (new_entry == NULL) return false;
+	if (UNLIKELY(new_entry == NULL)) return false;
 
 	new_entry->key = key;
 	new_entry->value = value_data;
@@ -481,7 +490,7 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 		return false;
 	}
 
-	if ((double)ht->count / ht->size > LOAD_FACTOR)
+	if (UNLIKELY(((double)ht->count / ht->size) > LOAD_FACTOR))
 		ht_rehash(ht);
 
 	size_t index = hash_key(key, ht->size);
@@ -491,7 +500,7 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 	while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
 		if (entry->key == key) {
 			void* new_value = calloc(1, value_size);
-			if (new_value == NULL) return false;
+			if (UNLIKELY(new_value == NULL)) return false;
 
 			free(entry->value);
 			entry->value = new_value;
@@ -504,11 +513,11 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 
     /* 新規追加 */
 	Entry* new_entry = calloc(1, sizeof(Entry));
-	if (new_entry == NULL) return false;
+	if (UNLIKELY(new_entry == NULL)) return false;
 
 	new_entry->key = key;
 	new_entry->value = calloc(1, value_size);
-	if (new_entry->value == NULL) {
+	if (UNLIKELY(new_entry->value == NULL)) {
 		free(new_entry);
 		return false;
 	}
@@ -565,7 +574,7 @@ void** _ht_all_get (HashTable* ht, size_t* out_count, const char* file, unsigned
 	}
 
 	void** values = calloc(ht->count, sizeof(void*));
-	if (values == NULL) {
+	if (UNLIKELY(values == NULL)) {
 		ht_unlock();
 		return NULL;
 	}
