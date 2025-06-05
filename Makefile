@@ -99,14 +99,8 @@ prebuild: clean
 endif
 
 
+ifneq ($(TARGET),)	# 実行ファイル名がある場合
 # デフォルトターゲット
-ifeq ($(TARGET),)	# 実行ファイル名がない場合は静的ライブラリをターゲットに
-	ifneq ($(STATIC_LIB),)
-all: staticlib
-	else			# 静的ライブラリ名もない場合は共有ライブラリをターゲットに
-all: sharedlib
-	endif
-else				# 通常
 all: $(TARGET)
 
 # 実行ファイルのビルド
@@ -115,12 +109,14 @@ $(TARGET): $(OBJS)
 endif
 
 
+ifneq ($(STATIC_LIB),)	# 静的ライブラリ名がある場合
 # 静的ライブラリのターゲット
 staticlib: $(STATIC_LIB)
 
 # 静的ライブラリのビルド
 $(STATIC_LIB): $(OBJS)
 	ar rcs $@ $^
+endif
 
 
 # 共有ライブラリのターゲット
