@@ -48,6 +48,8 @@
 
 #define LOAD_FACTOR 0.75
 
+#pragma GCC diagnostic pop
+
 #define HT_ENTRIES_INITIAL_SIZE 256
 #define HT_ENTRIES_TRIAL 4
 
@@ -441,8 +443,13 @@ static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_da
 		return false;
 	}
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunsuffixed-float-constants"  /* mhashtable自体のデバッグを行う際は必ず外すこと */
+
 	if (UNLIKELY(((double)ht->count / (double)ht->size) > LOAD_FACTOR))
 		ht_rehash(ht);
+
+#pragma GCC diagnostic pop
 
 	size_t index = hash_key(key, ht->size);
 	Entry* entry = ht->buckets[index];
@@ -493,8 +500,13 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 		return false;
 	}
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunsuffixed-float-constants"  /* mhashtable自体のデバッグを行う際は必ず外すこと */
+
 	if (UNLIKELY(((double)ht->count / (double)ht->size) > LOAD_FACTOR))
 		ht_rehash(ht);
+
+#pragma GCC diagnostic pop
 
 	size_t index = hash_key(key, ht->size);
 	Entry* entry = ht->buckets[index];
@@ -531,8 +543,6 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 	ht->count++;
 	return true;
 }
-
-#pragma GCC diagnostic pop
 
 
 bool _ht_set (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, unsigned int line) {
