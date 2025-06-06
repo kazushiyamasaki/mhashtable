@@ -1,6 +1,6 @@
 /*
  * mhashtable.c -- implementation part of a simple and thread-safe hashtable library
- * version 0.9.0, June 5, 2025
+ * version 0.9.1, June 7, 2025
  *
  * License: zlib License
  *
@@ -210,7 +210,7 @@ static void ht_unlock (void) {
 #elif defined (GCC_ATOMIC_BUILTIN_AVAILABLE)
 	__atomic_store_n(&ht_lock_int, 0, __ATOMIC_SEQ_CST);
 #elif defined (GCC_SYNC_BUILTIN_AVAILABLE)
-    __sync_lock_release(&ht_lock_int);
+	__sync_lock_release(&ht_lock_int);
 #endif
 }
 
@@ -475,7 +475,7 @@ static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_da
 		entry = entry->next;
 	}
 
-    /* 新規追加 */
+	/* 新規追加 */
 	Entry* new_entry = calloc(1, sizeof(Entry));
 	if (UNLIKELY(new_entry == NULL)) return false;
 
@@ -537,7 +537,7 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 		entry = entry->next;
 	}
 
-    /* 新規追加 */
+	/* 新規追加 */
 	Entry* new_entry = calloc(1, sizeof(Entry));
 	if (UNLIKELY(new_entry == NULL)) return false;
 
