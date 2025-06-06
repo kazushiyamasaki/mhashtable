@@ -42,13 +42,13 @@ COMMON_FLAGS		+= -fcf-protection=full
 endif
 
 # 最適化レベル（通常ビルド用）
-OPT_FLAGS			= -O2
+OPT_FLAGS			= -O2 -DNDEBUG
 
 # デバッグ用フラグ（debugターゲットなどで上書き）
 DEBUG_FLAGS			= -O0 -g
 
 # 追加の警告フラグ（debugターゲットなどで上書き）
-ADDITIONAL_FLAGS	= -Wmissing-declarations -Wmissing-include-dirs \
+ADDITIONAL_FLAGS	= -Werror -Wmissing-declarations -Wmissing-include-dirs \
 					-Wmissing-prototypes -Wstrict-prototypes -Wold-style-definition \
 					-Wimplicit-function-declaration -Wmissing-field-initializers \
 					-Wundef -Wbad-function-cast -Wdangling-else -Wtrampolines -Wcomment \
