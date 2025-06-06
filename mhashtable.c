@@ -93,7 +93,7 @@ static HashTable* all_get_arr_entries = NULL;
 
 	static void init_mtx (void) {
 		if (UNLIKELY(mtx_init(&ht_lock_mutex, mtx_plain) != thrd_success)) {
-			fprintf(stderr, "Failed to initialize the mutex!\nFile: %s   Line: %u\n", __FILE__, __LINE__);
+			fprintf(stderr, "Failed to initialize the mutex!\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 			exit(EXIT_FAILURE);
 		}
 	}
@@ -263,7 +263,7 @@ static void init (void) {
 		if (LIKELY(ht_entries != NULL)) break;
 	}
 	if (UNLIKELY(ht_entries == NULL)) {
-		fprintf(stderr, "Failed to initialize hashtable library.\nFile: %s   Line: %u\n", __FILE__, __LINE__);
+		fprintf(stderr, "Failed to initialize hashtable library.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		ht_unlock();
 		exit(EXIT_FAILURE);
 	}
@@ -272,7 +272,7 @@ static void init (void) {
 
 	all_get_arr_entries = ht_create_without_lock(ALL_GET_ARR_INITIAL_SIZE, __FILE__, __LINE__);
 	if (UNLIKELY(all_get_arr_entries == NULL))
-		fprintf(stderr, "Failed to prepare the hashtable that manages the array returned by the ht_all_get function.\nFile: %s   Line: %u\n", __FILE__, __LINE__);
+		fprintf(stderr, "Failed to prepare the hashtable that manages the array returned by the ht_all_get function.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 }
 
 
@@ -413,7 +413,7 @@ static void ht_rehash (HashTable* ht) {
 	size_t new_size = ht->size * 2;
 	Entry** new_buckets = calloc(new_size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
 	if (UNLIKELY(new_buckets == NULL)) {
-		fprintf(stderr, "Failed to allocate memory for rehashing.\nFile: %s   Line: %u\n", __FILE__, __LINE__);
+		fprintf(stderr, "Failed to allocate memory for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		return;
 	}
 
