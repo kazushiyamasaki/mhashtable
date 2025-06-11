@@ -304,7 +304,8 @@ static void ht_rehash (HashTable* ht) {
 }
 
 
-static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_data, const char* file, int line) {
+/* value_size が 0 のときに raw モードになる。ロック内で使用すること。 */
+static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, int line) {
 	if (!ht_pre_execution_check(ht, file, line))
 		return false;
 
@@ -331,8 +332,17 @@ static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_da
 	/* 既存キーを更新（上書き） */
 	while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
 		if (entry->key == key) {
-			free(entry->value);
-			entry->value = value_data;
+			if (value_size != 0) {
+				void* new_value = calloc(1, value_size);
+				if (UNLIKELY(new_value == NULL)) return false;
+
+				free(entry->value);
+				entry->value = new_value;
+				memcpy(entry->value, value_data, value_size);
+			} else {
+				free(entry->value);
+				entry->value = value_data;
+			}
 			return true;
 		}
 		entry = entry->next;
@@ -343,12 +353,27 @@ static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_da
 	if (UNLIKELY(new_entry == NULL)) return false;
 
 	new_entry->key = key;
-	new_entry->value = value_data;
+	if (value_size != 0) {
+		new_entry->value = calloc(1, value_size);
+		if (UNLIKELY(new_entry->value == NULL)) {
+			free(new_entry);
+			return false;
+		}
+		memcpy(new_entry->value, value_data, value_size);
+	} else {
+		new_entry->value = value_data;
+	}
 
 	new_entry->next = ht->buckets[index];
 	ht->buckets[index] = new_entry;
 	ht->count++;
 	return true;
+}
+
+
+static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_data, const char* file, int line) {
+	/* value_data に 0 を渡して raw モードに */
+	return ht_set_generic(ht, key, value_data, 0, file, line);
 }
 
 
@@ -361,65 +386,12 @@ bool _ht_set_raw (HashTable* ht, key_type key, void* value_data, const char* fil
 
 
 static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, int line) {
-	if (!ht_pre_execution_check(ht, file, line))
-		return false;
-
-	if (value_data == NULL) {
-		fprintf(stderr, "Value pointer is NULL.\nFile: %s   Line: %d\n", file, line);
-		return false;
-	}
-
+	/* ht_set_generic の value_data に 0 を渡すと raw モードになってしまうので、先に排除しておく */
 	if (value_size == 0) {
 		fprintf(stderr, "Value size is zero.\nFile: %s   Line: %d\n", file, line);
 		return false;
 	}
-
-#if defined (__GNUC__) && !defined (__clang__)
-	#pragma GCC diagnostic push
-	#pragma GCC diagnostic ignored "-Wunsuffixed-float-constants"  /* mhashtable自体のデバッグを行う際は必ず外すこと */
-#endif
-
-	if (UNLIKELY(((double)ht->count / (double)ht->size) > LOAD_FACTOR))
-		ht_rehash(ht);
-
-#if defined (__GNUC__) && !defined (__clang__)
-	#pragma GCC diagnostic pop
-#endif
-
-	size_t index = hash_key(key, ht->size);
-	Entry* entry = ht->buckets[index];
-
-	/* 既存キーを更新（上書き） */
-	while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
-		if (entry->key == key) {
-			void* new_value = calloc(1, value_size);
-			if (UNLIKELY(new_value == NULL)) return false;
-
-			free(entry->value);
-			entry->value = new_value;
-			memcpy(entry->value, value_data, value_size);
-
-			return true;
-		}
-		entry = entry->next;
-	}
-
-	/* 新規追加 */
-	Entry* new_entry = calloc(1, sizeof(Entry));
-	if (UNLIKELY(new_entry == NULL)) return false;
-
-	new_entry->key = key;
-	new_entry->value = calloc(1, value_size);
-	if (UNLIKELY(new_entry->value == NULL)) {
-		free(new_entry);
-		return false;
-	}
-	memcpy(new_entry->value, value_data, value_size);
-
-	new_entry->next = ht->buckets[index];
-	ht->buckets[index] = new_entry;
-	ht->count++;
-	return true;
+	return ht_set_generic(ht, key, value_data, value_size, file, line);
 }
 
 
