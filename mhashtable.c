@@ -135,6 +135,7 @@ static void init (void) {
 	if (UNLIKELY(ht_entries == NULL)) {
 		fprintf(stderr, "Failed to initialize hashtable library.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		ht_unlock();
+		global_lock_quit();
 		exit(EXIT_FAILURE);
 	}
 
