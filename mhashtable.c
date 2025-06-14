@@ -163,6 +163,13 @@ static HashTable* ht_create_without_register (size_t size, const char* file, int
 		size = adjusted;
 	}
 
+	if (size > (SIZE_MAX / sizeof(Entry*))) {
+		fprintf(stderr, "Hashtable size is too large.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		ht_errfunc = "_ht_create";
+		return NULL;
+	}
+
 	HashTable* ht = calloc(1, sizeof(HashTable));
 	if (UNLIKELY(ht == NULL)) {
 		fprintf(stderr, "Failed to allocate memory for hashtable.\nFile: %s   Line: %d\n", file, line);
@@ -305,7 +312,22 @@ void _ht_destroy_without_value (HashTable* ht, const char* file, int line) {
 
 
 static void ht_rehash (HashTable* ht) {
+	if (ht->size > (SIZE_MAX / 2)) {
+		fprintf(stderr, "Hashtable size is too large for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
+		errno = EIO;
+		ht_errfunc = "ht_rehash";
+		return NULL;
+	}
+
 	size_t new_size = ht->size * 2;
+
+	if (new_size > (SIZE_MAX / sizeof(Entry*))) {
+		fprintf(stderr, "Hashtable size is too large for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
+		errno = EIO;
+		ht_errfunc = "ht_rehash";
+		return NULL;
+	}
+
 	Entry** new_buckets = calloc(new_size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
 	if (UNLIKELY(new_buckets == NULL)) {
 		fprintf(stderr, "Failed to allocate memory for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
@@ -480,6 +502,13 @@ void** _ht_all_get (HashTable* ht, size_t* out_count, const char* file, int line
 	if (!ht_pre_execution_check(ht, file, line)) {
 		ht_errfunc = "_ht_all_get";
 		ht_unlock();
+		return NULL;
+	}
+
+	if (ht->count > (SIZE_MAX / sizeof(void*))) {
+		fprintf(stderr, "Hashtable count is too large for all_get.\nFile: %s   Line: %d\n", file, line);
+		errno = EIO;
+		ht_errfunc = "_ht_all_get";
 		return NULL;
 	}
 
