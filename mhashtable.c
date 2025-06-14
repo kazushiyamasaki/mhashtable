@@ -1,6 +1,6 @@
 /*
  * mhashtable.c -- implementation part of a simple and thread-safe hashtable library
- * version 0.9.0, June 12, 2025
+ * version 0.9.2, June 14, 2025
  *
  * License: zlib License
  *
@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 
 
 #if !defined (__STDC_VERSION__) || (__STDC_VERSION__ < 199901L)
@@ -66,6 +67,10 @@ typedef struct {
 
 static HashTable* ht_entries = NULL;
 static HashTable* all_get_arr_entries = NULL;
+
+
+/* errno 記録時に関数名を記録する */
+const char* ht_errfunc = NULL;  /* 非スレッドセーフ */
 
 
 #define GLOBAL_LOCK_FUNC_NAME ht_lock
@@ -122,14 +127,14 @@ static size_t hash_key (key_type key, size_t size) {
 }
 
 
-static HashTable* ht_create_without_register (size_t size);
+static HashTable* ht_create_without_register (size_t size, const char* file, int line);
 static void quit (void);
 static HashTable* ht_create_without_lock (size_t size, const char* file, int line);
 
 /* 重要: この関数は必ずロックした後に呼び出す必要があります！ */
 static void init (void) {
 	for (size_t i = 0; i < HT_ENTRIES_TRIAL; i++) {
-		ht_entries = ht_create_without_register(HT_ENTRIES_INITIAL_SIZE);
+		ht_entries = ht_create_without_register(HT_ENTRIES_INITIAL_SIZE, file, line);
 		if (LIKELY(ht_entries != NULL)) break;
 	}
 	if (UNLIKELY(ht_entries == NULL)) {
@@ -142,12 +147,14 @@ static void init (void) {
 	atexit(quit);
 
 	all_get_arr_entries = ht_create_without_lock(ALL_GET_ARR_INITIAL_SIZE, __FILE__, __LINE__);
-	if (UNLIKELY(all_get_arr_entries == NULL))
+	if (UNLIKELY(all_get_arr_entries == NULL)) {
 		fprintf(stderr, "Failed to prepare the hashtable that manages the array returned by the ht_all_get function.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
+		ht_errfunc = "init";
+	}
 }
 
 
-static HashTable* ht_create_without_register (size_t size) {
+static HashTable* ht_create_without_register (size_t size, const char* file, int line) {
 	if (size == 0) return NULL;
 
 	if (!ht_is_power_of_two(size)) {
@@ -157,11 +164,21 @@ static HashTable* ht_create_without_register (size_t size) {
 	}
 
 	HashTable* ht = calloc(1, sizeof(HashTable));
-	if (UNLIKELY(ht == NULL)) return NULL;
+	if (UNLIKELY(ht == NULL)) {
+		fprintf(stderr, "Failed to allocate memory for hashtable.\nFile: %s   Line: %d\n", file, line);
+		errno = ENOMEM;
+		ht_errfunc = "_ht_create";
+		return NULL;
+	}
 
 	ht->buckets = calloc(size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
 	if (UNLIKELY(ht->buckets == NULL)) {
+		fprintf(stderr, "Failed to allocate memory for hashtable buckets.\nFile: %s   Line: %d\n", file, line);
+		errno = ENOMEM;
+		ht_errfunc = "_ht_create";
+
 		free(ht);
+
 		return NULL;
 	}
 	ht->size = size;
@@ -174,7 +191,7 @@ static HashTable* ht_create_without_register (size_t size) {
 static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, int line);
 
 static HashTable* ht_create_without_lock (size_t size, const char* file, int line) {
-	HashTable* ht = ht_create_without_register(size);
+	HashTable* ht = ht_create_without_register(size, file, line);
 
 	if (UNLIKELY(ht_entries == NULL)) {
 		init();
@@ -189,8 +206,11 @@ static HashTable* ht_create_without_lock (size_t size, const char* file, int lin
 #endif
 	};
 
-	if (UNLIKELY(!ht_set_without_lock(ht_entries, (key_type)ht, &ht_entry, sizeof(HtTrackEntry), file, line)))
+	if (UNLIKELY(!ht_set_without_lock(ht_entries, (key_type)ht, &ht_entry, sizeof(HtTrackEntry), file, line))) {
 		fprintf(stderr, "Failed to set hashtable in hashtable entries.\nFile: %s   Line: %d\n", file, line);
+		errno = ENOMEM;
+		ht_errfunc = "_ht_create";
+	}
 
 	return ht;
 }
@@ -209,11 +229,13 @@ static void* ht_get_without_lock (HashTable* ht, key_type key, const char* file,
 static bool ht_pre_execution_check (HashTable* ht, const char* file, int line) {
 	if (ht == NULL) {
 		fprintf(stderr, "Hashtable is NULL.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
 		return false;
 	}
 
 	if (UNLIKELY(ht_entries == NULL)) {
 		fprintf(stderr, "Hashtable entries are NULL.\nFile: %s   Line: %d\n", file, line);
+		errno = EPERM;
 		return false;
 	}
 
@@ -221,6 +243,7 @@ static bool ht_pre_execution_check (HashTable* ht, const char* file, int line) {
 		HtTrackEntry* ht_entry = ht_get_without_lock(ht_entries, (key_type)ht, file, line);
 		if (ht_entry == NULL) {
 			fprintf(stderr, "Hashtable does not exist in hashtable entries.\nFile: %s   Line: %d\n", file, line);
+			errno = EINVAL;
 			return false;
 		}
 	}
@@ -250,6 +273,7 @@ void _ht_destroy (HashTable* ht, const char* file, int line) {
 	ht_lock();
 
 	if (!ht_pre_execution_check(ht, file, line)) {
+		ht_errfunc = "_ht_destroy";
 		ht_unlock();
 		return;
 	}
@@ -267,6 +291,7 @@ void _ht_destroy_without_value (HashTable* ht, const char* file, int line) {
 	ht_lock();
 
 	if (!ht_pre_execution_check(ht, file, line)) {
+		ht_errfunc = "_ht_destroy_without_value";
 		ht_unlock();
 		return;
 	}
@@ -285,6 +310,8 @@ static void ht_rehash (HashTable* ht) {
 	Entry** new_buckets = calloc(new_size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
 	if (UNLIKELY(new_buckets == NULL)) {
 		fprintf(stderr, "Failed to allocate memory for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
+		errno = ENOMEM;
+		ht_errfunc = "ht_rehash";
 		return;
 	}
 
@@ -312,6 +339,7 @@ static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_
 
 	if (value_data == NULL) {
 		fprintf(stderr, "Value pointer is NULL.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
 		return false;
 	}
 
@@ -358,6 +386,7 @@ static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_
 		new_entry->value = calloc(1, value_size);
 		if (UNLIKELY(new_entry->value == NULL)) {
 			free(new_entry);
+			errno = ENOMEM;
 			return false;
 		}
 		memcpy(new_entry->value, value_data, value_size);
@@ -374,7 +403,9 @@ static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_
 
 static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_data, const char* file, int line) {
 	/* value_data に 0 を渡して raw モードに */
-	return ht_set_generic(ht, key, value_data, 0, file, line);
+	bool result = ht_set_generic(ht, key, value_data, 0, file, line);
+	if (!result) ht_errfunc = "_ht_set_raw";
+	return result;
 }
 
 
@@ -392,7 +423,10 @@ static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, 
 		fprintf(stderr, "Value size is zero.\nFile: %s   Line: %d\n", file, line);
 		return false;
 	}
-	return ht_set_generic(ht, key, value_data, value_size, file, line);
+
+	bool result = ht_set_generic(ht, key, value_data, value_size, file, line);
+	if (!result) ht_errfunc = "_ht_set";
+	return result;
 }
 
 
@@ -405,8 +439,10 @@ bool _ht_set (HashTable* ht, key_type key, void* value_data, size_t value_size, 
 
 
 static void* ht_get_without_lock (HashTable* ht, key_type key, const char* file, int line) {
-	if (!ht_pre_execution_check(ht, file, line))
+	if (!ht_pre_execution_check(ht, file, line)) {
+		ht_errfunc = "_ht_get";
 		return NULL;
+	}
 
 	size_t index = hash_key(key, ht->size);
 	Entry* entry = ht->buckets[index];
@@ -417,6 +453,9 @@ static void* ht_get_without_lock (HashTable* ht, key_type key, const char* file,
 		entry = entry->next;
 	}
 
+	fprintf(stderr, "Key not found in hashtable.\nFile: %s   Line: %d\n", file, line);
+	errno = EINVAL;
+	ht_errfunc = "_ht_get";
 	return NULL;
 }
 
@@ -432,15 +471,23 @@ void* _ht_get (HashTable* ht, key_type key, const char* file, int line) {
 void** _ht_all_get (HashTable* ht, size_t* out_count, const char* file, int line) {
 	ht_lock();
 
-	if (out_count == NULL) return NULL;
+	if (out_count == NULL) {
+		fprintf(stderr, "Output count pointer is NULL.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		ht_errfunc = "_ht_all_get";
+		return NULL;
+	}
 
 	if (!ht_pre_execution_check(ht, file, line)) {
+		ht_errfunc = "_ht_all_get";
 		ht_unlock();
 		return NULL;
 	}
 
 	void** values = calloc(ht->count, sizeof(void*));
 	if (UNLIKELY(values == NULL)) {
+		errno = ENOMEM;
+		ht_errfunc = "_ht_all_get";
 		ht_unlock();
 		return NULL;
 	}
@@ -468,8 +515,10 @@ bool _ht_all_release_arr (void* values, const char* file, int line) {
 
 
 static bool ht_delete_without_lock (HashTable* ht, key_type key, const char* file, int line) {
-	if (!ht_pre_execution_check(ht, file, line))
+	if (!ht_pre_execution_check(ht, file, line)) {
+		ht_errfunc = "_ht_delete";
 		return false;
+	}
 
 	size_t index = hash_key(key, ht->size);
 	Entry* prev = NULL;
@@ -490,6 +539,10 @@ static bool ht_delete_without_lock (HashTable* ht, key_type key, const char* fil
 		prev = entry;
 		entry = entry->next;
 	}
+
+	fprintf(stderr, "Key not found in hashtable.\nFile: %s   Line: %d\n", file, line);
+	errno = EINVAL;
+	ht_errfunc = "_ht_delete";
 	return false;
 }
 

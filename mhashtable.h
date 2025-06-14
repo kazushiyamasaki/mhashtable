@@ -1,6 +1,6 @@
 /*
  * mhashtable.h -- interface of a simple and thread-safe hashtable library
- * version 0.9.0, June 12, 2025
+ * version 0.9.2, June 14, 2025
  *
  * License: zlib License
  *
@@ -114,6 +114,20 @@ typedef struct {
 	size_t size;     /* number of buckets */
 	size_t count;    /* number of elements */
 } HashTable;
+
+
+/*
+ * ht_errfunc is a global variable that stores the name of the function
+ * where the most recent error occurred within the hash table library.
+ *
+ * It is set to NULL when no error has occurred.
+ * This variable is used to provide more informative error diagnostics,
+ * especially in combination with errno.
+ *
+ * It is recommended to check this variable and errno after calling
+ * any library function that may fail.
+ */
+extern const char* ht_errfunc;
 
 
 /*
