@@ -208,7 +208,6 @@ static HashTable* ht_create_without_lock (size_t size, const char* file, int lin
 
 	if (UNLIKELY(!ht_set_without_lock(ht_entries, (key_type)ht, &ht_entry, sizeof(HtTrackEntry), file, line))) {
 		fprintf(stderr, "Failed to set hashtable in hashtable entries.\nFile: %s   Line: %d\n", file, line);
-		errno = ENOMEM;
 		ht_errfunc = "_ht_create";
 	}
 
