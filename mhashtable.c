@@ -138,7 +138,7 @@ static HashTable* ht_create_without_lock (size_t size, const char* file, int lin
 /* 重要: この関数は必ずロックした後に呼び出す必要があります！ */
 static void init (void) {
 	for (size_t i = 0; i < HT_ENTRIES_TRIAL; i++) {
-		ht_entries = ht_create_without_register(HT_ENTRIES_INITIAL_SIZE, file, line);
+		ht_entries = ht_create_without_register(HT_ENTRIES_INITIAL_SIZE, __FILE__, __LINE__);
 		if (LIKELY(ht_entries != NULL)) break;
 	}
 	if (UNLIKELY(ht_entries == NULL)) {
@@ -320,7 +320,7 @@ static void ht_rehash (HashTable* ht) {
 		fprintf(stderr, "Hashtable size is too large for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		errno = EIO;
 		ht_errfunc = "ht_rehash";
-		return NULL;
+		return;
 	}
 
 	size_t new_size = ht->size * 2;
@@ -329,7 +329,7 @@ static void ht_rehash (HashTable* ht) {
 		fprintf(stderr, "Hashtable size is too large for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		errno = EIO;
 		ht_errfunc = "ht_rehash";
-		return NULL;
+		return;
 	}
 
 	Entry** new_buckets = calloc(new_size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
