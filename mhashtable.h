@@ -1,6 +1,6 @@
 /*
  * mhashtable.h -- interface of a simple and thread-safe hashtable library
- * version 0.9.2, June 14, 2025
+ * version 0.9.3, June 15, 2025
  *
  * License: zlib License
  *
@@ -78,6 +78,15 @@ MHT_CPP_C_BEGIN
 #include <stdbool.h>
 
 
+#if defined (__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+	#define THREAD_LOCAL _Thread_local
+#elif defined (__GNUC__)
+	#define THREAD_LOCAL __thread
+#elif defined (_MSC_VER)
+	#define THREAD_LOCAL __declspec(thread)
+#endif
+
+
 /*
  * The functions replaced by the following macros are specific to this library.
  * It is recommended not to remove them unless a conflict occurs.
@@ -127,7 +136,11 @@ typedef struct {
  * It is recommended to check this variable and errno after calling
  * any library function that may fail.
  */
-extern const char* ht_errfunc;
+#ifdef THREAD_LOCAL
+	extern THREAD_LOCAL const char* ht_errfunc;
+#else
+	extern const char* ht_errfunc;
+#endif
 
 
 /*

@@ -1,6 +1,6 @@
 /*
  * mhashtable.c -- implementation part of a simple and thread-safe hashtable library
- * version 0.9.2, June 14, 2025
+ * version 0.9.3, June 15, 2025
  *
  * License: zlib License
  *
@@ -70,7 +70,11 @@ static HashTable* all_get_arr_entries = NULL;
 
 
 /* errno 記録時に関数名を記録する */
-const char* ht_errfunc = NULL;  /* 非スレッドセーフ */
+#ifdef THREAD_LOCAL
+	THREAD_LOCAL const char* ht_errfunc = NULL;
+#else
+	const char* ht_errfunc = NULL;  /* 非スレッドセーフ */
+#endif
 
 
 #define GLOBAL_LOCK_FUNC_NAME ht_lock
