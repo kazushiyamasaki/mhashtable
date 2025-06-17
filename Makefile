@@ -5,6 +5,9 @@ CC					= gcc
 # アーカイバ（この Makefile は GNU ar でしか動作確認されていません）
 AR					= ar
 
+# ファイル削除
+RM					= rm -f
+
 # CC が GCC であった場合
 ifneq ($(findstring gcc,$(notdir $(CC))),)
 # GCC のバージョン
@@ -158,7 +161,7 @@ ADDITIONAL_FLAGS	+= -Wdeprecated-non-prototype -Wmissing-parameter-name \
 					-Wstrict-flex-arrays=3 -Wfree-labels
 endif
 
-endif  # 93行目からここまで GCC のみ
+endif  # 96行目からここまで GCC のみ
 
 
 SCAN_BUILD			=
@@ -216,7 +219,7 @@ ifeq ($(shell [ $(CLANG_VERSION_MAJOR) -ge 19 ] && echo yes),yes)
 ADDITIONAL_FLAGS	+= -Wformat-signedness
 endif
 
-endif  # 166行目からここまで Clang のみ
+endif  # 169行目からここまで Clang のみ
 
 
 # LIB_MODE に応じて CFLAGS で DEBUG マクロを定義する
@@ -266,14 +269,14 @@ endif
 # デフォルトターゲット
 DEFAULT_TARGET		?=
 
-ifeq ($(DEFAULT_TARGET),)	# DEFAULT_TARGET (execfile or staticlib or sharedlib) が指定されていない場合
+ifeq ($(DEFAULT_TARGET),)	# DEFAULT_TARGET (execfile or sharedlib or staticlib) が指定されていない場合
 ifneq ($(TARGET),)				# 実行ファイル名がある場合
 DEFAULT_TARGET		= execfile
 else							# 実行ファイル名がない場合
-ifneq ($(STATIC_LIB),)				# 静的ライブラリ名がある場合
-DEFAULT_TARGET		= staticlib
-else								# 静的ライブラリ名がない場合
+ifneq ($(SHARED_LIB),)				# 共有ライブラリ名がある場合
 DEFAULT_TARGET		= sharedlib
+else								# 共有ライブラリ名がない場合
+DEFAULT_TARGET		= staticlib
 endif
 endif
 endif
@@ -329,7 +332,7 @@ endif
 
 # クリーン
 clean:
-	rm -f $(TARGET) $(OBJS) $(DEPS) $(STATIC_LIB) $(SHARED_LIB) $(PIC_OBJS) $(PIC_DEPS)
+	$(RM) $(TARGET) $(OBJS) $(DEPS) $(STATIC_LIB) $(SHARED_LIB) $(PIC_OBJS) $(PIC_DEPS)
 
 
 # クリーンしてからビルド
