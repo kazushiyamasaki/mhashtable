@@ -28,8 +28,9 @@ MODE				?=
 LIB_MODE			?=
 
 # 依存ライブラリ（この Makefile は POSIX互換 環境にしか対応していません）
-CFLAGS				= -pthread -I. -I./libs
-LDLIBS				= -pthread
+CFLAGS				= -pthread -I. -I./libs/global_lock.h -I./libs/mutils
+LDLIBS				= -pthread -lmutils -L./libs/mutils \
+					-Wl,-rpath,'$ORIGIN' -Wl,-rpath,'$ORIGIN/libs'
 
 # FORTIFY_SOURCE の値を gcc >= 12 または clang なら 3 、そうでなければ 2 に指定する
 ifeq ($(shell (( [ $(findstring gcc,$(notdir $(CC))) ] && [ $(GCC_VERSION_MAJOR) -ge 12 ] ) || \
@@ -161,7 +162,7 @@ ADDITIONAL_FLAGS	+= -Wdeprecated-non-prototype -Wmissing-parameter-name \
 					-Wstrict-flex-arrays=3 -Wfree-labels
 endif
 
-endif  # 96行目からここまで GCC のみ
+endif  # 97行目からここまで GCC のみ
 
 
 SCAN_BUILD			=
@@ -219,7 +220,7 @@ ifeq ($(shell [ $(CLANG_VERSION_MAJOR) -ge 19 ] && echo yes),yes)
 ADDITIONAL_FLAGS	+= -Wformat-signedness
 endif
 
-endif  # 169行目からここまで Clang のみ
+endif  # 170行目からここまで Clang のみ
 
 
 # LIB_MODE に応じて CFLAGS で DEBUG マクロを定義する

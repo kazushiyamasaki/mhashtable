@@ -1,6 +1,6 @@
 /*
  * mhashtable.c -- implementation part of a simple and thread-safe hashtable library
- * version 0.9.3, June 15, 2025
+ * version 0.9.5, June 22, 2025
  *
  * License: zlib License
  *
@@ -39,6 +39,11 @@
 #endif
 
 
+#if defined (_WIN32) && (!defined(_WIN32_WINNT) || (_WIN32_WINNT < 0x0600))
+	#error "This program requires Windows Vista or later. Define _WIN32_WINNT accordingly."
+#endif
+
+
 #if defined (__GNUC__) && !defined (__clang__)
 	#pragma GCC diagnostic push
 	#pragma GCC diagnostic ignored "-Wunsuffixed-float-constants"  /* mhashtable自体のデバッグを行う際は必ず外すこと */
@@ -50,143 +55,232 @@
 	#pragma GCC diagnostic pop
 #endif
 
-#define HT_ENTRIES_INITIAL_SIZE 256
-#define HT_ENTRIES_TRIAL 4
+#define MHT_ENTRIES_INITIAL_SIZE 256
+#define MHT_ENTRIES_TRIAL 4
 
 #define ALL_GET_ARR_INITIAL_SIZE 16
 
 
+typedef enum {
+	KEY_TYPE_UINT,
+	KEY_TYPE_STR
+} KeyType;
+
+
+typedef struct MHtEntry {
+	union {
+		uint_keyt uint;
+		str_keyt str;
+	} key;
+	size_t value_size;  /* raw モードで set された場合 0 */
+	void* value;
+	struct MHtEntry* next;
+} MHtEntry;
+
+
+struct MHashTable {
+	MHtEntry** buckets;
+	size_t size;     /* number of buckets */
+	size_t count;    /* number of elements */
+	KeyType key_type;
+};
+
+
 typedef struct {
-	HashTable* ptr;
+	MHashTable* ptr;
 #ifdef DEBUG
 	const char* create_file;
 	int create_line;
+	KeyType key_type;
 #endif
-} HtTrackEntry;
+} MHtTrackEntry;
 
 
-static HashTable* ht_entries = NULL;
-static HashTable* all_get_arr_entries = NULL;
+typedef struct {
+	union {
+		uint_keyt uint;
+		str_keyt str;
+	} key;
+	KeyType key_type;
+} KeyUni;
+
+
+static MHashTable* mht_entries = NULL;
+static MHashTable* all_get_arr_entries = NULL;
 
 
 /* errno 記録時に関数名を記録する */
 #ifdef THREAD_LOCAL
-	THREAD_LOCAL const char* ht_errfunc = NULL;
+	THREAD_LOCAL const char* mht_errfunc = NULL;
 #else
-	const char* ht_errfunc = NULL;  /* 非スレッドセーフ */
+	const char* mht_errfunc = NULL;  /* 非スレッドセーフ */
 #endif
 
 
-#define GLOBAL_LOCK_FUNC_NAME ht_lock
-#define GLOBAL_UNLOCK_FUNC_NAME ht_unlock
+#define GLOBAL_LOCK_FUNC_NAME mht_lock
+#define GLOBAL_UNLOCK_FUNC_NAME mht_unlock
 #define GLOBAL_LOCK_FUNC_SCOPE static
 
 #include "global_lock.h"
 
 
-const char* bool_text (bool flag) {
-	return flag ? "true" : "false";
+uint64_t wang_hash64 (uint64_t num) {
+	num = (~num) + (num << 21);             /* num = (num << 21) - num - 1; */
+	num = num ^ (num >> 24);
+	num = (num + (num << 3)) + (num << 8);  /* num * 265 */
+	num = num ^ (num >> 14);
+	num = (num + (num << 2)) + (num << 4);  /* num * 21 */
+	num = num ^ (num >> 28);
+	num = num + (num << 31);
+	return num;
 }
 
 
-uint64_t wang_hash64 (uint64_t key) {
-	key = (~key) + (key << 21);             /* key = (key << 21) - key - 1; */
-	key = key ^ (key >> 24);
-	key = (key + (key << 3)) + (key << 8);  /* key * 265 */
-	key = key ^ (key >> 14);
-	key = (key + (key << 2)) + (key << 4);  /* key * 21 */
-	key = key ^ (key >> 28);
-	key = key + (key << 31);
-	return key;
+uint32_t wang_hash32 (uint32_t num) {
+	num = (~num) + (num << 15);    /* num = (num << 15) - num - 1; */
+	num = num ^ (num >> 12);
+	num = num + (num << 2);
+	num = num ^ (num >> 4);
+	num = num * 2057;              /* num = num + (num << 3) + (num << 11); */
+	num = num ^ (num >> 16);
+	return num;
 }
 
 
-uint32_t wang_hash32 (uint32_t key) {
-	key = (~key) + (key << 15);    /* key = (key << 15) - key - 1; */
-	key = key ^ (key >> 12);
-	key = key + (key << 2);
-	key = key ^ (key >> 4);
-	key = key * 2057;              /* key = key + (key << 3) + (key << 11); */
-	key = key ^ (key >> 16);
-	return key;
+uint64_t djb2_hash64n (const char* str, size_t len) {
+	const uint8_t* p = (const uint8_t*)str;
+	uint64_t hash = 5381;
+	for (size_t i = 0; i < len; i++) {
+		if (p[i] == '\0') break;
+		hash = ((hash << 5) + hash) + p[i];  /* hash * 33 + p[i] */
+	}
+	return hash;
 }
 
 
-static key_type wang_hash (key_type key) {
-#if KEY_TYPE_MAX > UINT32_MAX
-	return wang_hash64(key);
-#else
-	return wang_hash32(key);
-#endif
+uint32_t djb2_hash32n (const char* str, size_t len) {
+	const uint8_t* p = (const uint8_t*)str;
+	uint32_t hash = 5381;
+	for (size_t i = 0; i < len; i++) {
+		if (p[i] == '\0') break;
+		hash = ((hash << 5) + hash) + p[i];  /* hash * 33 + p[i] */
+	}
+	return hash;
 }
 
 
-static size_t hash_key (key_type key, size_t size) {
-	key_type hash = wang_hash(key);
-#if KEY_TYPE_MAX > UINT32_MAX
+static size_t hash_uint_key (uint_keyt key, size_t size) {
+#if SIZE_MAX > UINT32_MAX
+	size_t hash = wang_hash64(key);
 	return (hash ^ (hash >> 32)) & (size - 1);
 #else
+	size_t hash = wang_hash32(key);
 	return (hash ^ (hash >> 16)) & (size - 1);
 #endif
 }
 
 
-static HashTable* ht_create_without_register (size_t size, const char* file, int line);
+static size_t hash_str_key (str_keyt key, size_t size) {
+	if (key.ptr == NULL || key.len == 0 || size == 0) {
+		errno = EINVAL;
+		mht_errfunc = "hash_str_key";
+		return 0;
+	}
+#if SIZE_MAX > UINT32_MAX
+	size_t hash = djb2_hash64n(key.ptr, key.len);
+	return (hash ^ (hash >> 32)) & (size - 1);
+#else
+	size_t hash = djb2_hash32n(key.ptr, key.len);
+	return (hash ^ (hash >> 16)) & (size - 1);
+#endif
+}
+
+
+bool mht_str_key_is_valid (str_keyt key) {
+	if (key.ptr == NULL) return false;
+	if (key.ptr[0] == '\0') return false;
+	if (key.len == 0) return false;
+
+	size_t str_len = mutils_strnlen(key.ptr, key.len);
+	if (str_len < key.len) return false;
+
+	return true;
+}
+
+
+static bool str_key_equal (str_keyt a, str_keyt b) {
+	return (a.len == b.len) && (memcmp(a.ptr, b.ptr, a.len) == 0);
+}
+
+
+bool mht_str_key_equal (str_keyt a, str_keyt b) {
+	if (!mht_str_key_is_valid(a) || !mht_str_key_is_valid(b)) {
+		errno = EINVAL;
+		mht_errfunc = "mht_str_key_equal";
+		return false;
+	}
+
+	return str_key_equal(a, b);
+}
+
+
+static MHashTable* mht_create_without_register_generic (size_t size, KeyType key_type, const char* file, int line);
 static void quit (void);
-static HashTable* ht_create_without_lock (size_t size, const char* file, int line);
+static MHashTable* mht_uint_create_without_lock (size_t size, const char* file, int line);
 
 /* 重要: この関数は必ずロックした後に呼び出す必要があります！ */
 static void init (void) {
-	for (size_t i = 0; i < HT_ENTRIES_TRIAL; i++) {
-		ht_entries = ht_create_without_register(HT_ENTRIES_INITIAL_SIZE, __FILE__, __LINE__);
-		if (LIKELY(ht_entries != NULL)) break;
+	for (size_t i = 0; i < MHT_ENTRIES_TRIAL; i++) {
+		mht_entries = mht_create_without_register_generic(MHT_ENTRIES_INITIAL_SIZE, KEY_TYPE_UINT, __FILE__, __LINE__);
+		if (LIKELY(mht_entries != NULL)) break;
 	}
-	if (UNLIKELY(ht_entries == NULL)) {
-		fprintf(stderr, "Failed to initialize hashtable library.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
-		ht_unlock();
+	if (UNLIKELY(mht_entries == NULL)) {
+		fprintf(stderr, "Failed to initialize mhashtable library.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
+		mht_unlock();
 		global_lock_quit();
 		exit(EXIT_FAILURE);
 	}
 
 	atexit(quit);
 
-	all_get_arr_entries = ht_create_without_lock(ALL_GET_ARR_INITIAL_SIZE, __FILE__, __LINE__);
+	all_get_arr_entries = mht_uint_create_without_lock(ALL_GET_ARR_INITIAL_SIZE, __FILE__, __LINE__);
 	if (UNLIKELY(all_get_arr_entries == NULL)) {
-		fprintf(stderr, "Failed to prepare the hashtable that manages the array returned by the ht_all_get function.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
-		ht_errfunc = "init";
+		fprintf(stderr, "Failed to prepare the hashtable that manages the array returned by the mht_all_get function.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
+		mht_errfunc = "init";
 	}
 }
 
 
-static HashTable* ht_create_without_register (size_t size, const char* file, int line) {
-	if (size == 0) return NULL;
+static MHashTable* mht_create_without_register_generic (size_t size, KeyType key_type, const char* file, int line) {
+	if (size == 0) {
+		fprintf(stderr, "Hashtable size cannot be zero.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		return NULL;
+	}
 
-	if (!ht_is_power_of_two(size)) {
-		size_t adjusted = ht_next_power_of_two(size);
+	if (!mutils_is_power_of_two(size)) {
+		size_t adjusted = mutils_next_power_of_two(size);
 		printf("Hashtable size adjusted from %zu to %zu\n", size, adjusted);
 		size = adjusted;
 	}
 
-	if (size > (SIZE_MAX / sizeof(Entry*))) {
+	if (size > (SIZE_MAX / sizeof(MHtEntry*))) {
 		fprintf(stderr, "Hashtable size is too large.\nFile: %s   Line: %d\n", file, line);
 		errno = EINVAL;
-		ht_errfunc = "_ht_create";
 		return NULL;
 	}
 
-	HashTable* ht = calloc(1, sizeof(HashTable));
+	MHashTable* ht = calloc(1, sizeof(MHashTable));
 	if (UNLIKELY(ht == NULL)) {
 		fprintf(stderr, "Failed to allocate memory for hashtable.\nFile: %s   Line: %d\n", file, line);
 		errno = ENOMEM;
-		ht_errfunc = "_ht_create";
 		return NULL;
 	}
 
-	ht->buckets = calloc(size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
+	ht->buckets = calloc(size, sizeof(MHtEntry*));  /* 今後の処理のために必ず初期化が必要 */
 	if (UNLIKELY(ht->buckets == NULL)) {
 		fprintf(stderr, "Failed to allocate memory for hashtable buckets.\nFile: %s   Line: %d\n", file, line);
 		errno = ENOMEM;
-		ht_errfunc = "_ht_create";
 
 		free(ht);
 
@@ -194,64 +288,108 @@ static HashTable* ht_create_without_register (size_t size, const char* file, int
 	}
 	ht->size = size;
 	ht->count = 0;
+	ht->key_type = key_type;
 
 	return ht;
 }
 
 
-static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, int line);
+static bool mht_uint_set_without_lock (MHashTable* ht, uint_keyt key, void* value_data, size_t value_size, const char* file, int line);
 
-static HashTable* ht_create_without_lock (size_t size, const char* file, int line) {
-	HashTable* ht = ht_create_without_register(size, file, line);
+static MHashTable* mht_uint_create_without_lock (size_t size, const char* file, int line) {
+	MHashTable* ht = mht_create_without_register_generic(size, KEY_TYPE_UINT, file, line);
+	if (ht == NULL) {
+		mht_errfunc = "_mht_uint_create";
+		return NULL;
+	}
 
-	if (UNLIKELY(ht_entries == NULL)) {
+	if (UNLIKELY(mht_entries == NULL)) {
 		init();
 	}
 
-	HtTrackEntry ht_entry = {
+	MHtTrackEntry mht_entry = {
+		.ptr = ht
+#ifdef DEBUG
+		,
+		.create_file = file,
+		.create_line = line,
+		.key_type = KEY_TYPE_UINT
+#endif
+	};
+
+	if (UNLIKELY(!mht_uint_set_without_lock(mht_entries, (uint_keyt)ht, &mht_entry, sizeof(MHtTrackEntry), file, line))) {
+		fprintf(stderr, "Failed to set hashtable in hashtable entries.\nFile: %s   Line: %d\n", file, line);
+		mht_errfunc = "_mht_uint_create";
+	}
+
+	return ht;
+}
+
+
+MHashTable* _mht_uint_create (size_t size, const char* file, int line) {
+	mht_lock();
+	MHashTable* ht = mht_uint_create_without_lock(size, file, line);
+	mht_unlock();
+	return ht;
+}
+
+
+static MHashTable* mht_str_create_without_lock (size_t size, const char* file, int line) {
+	MHashTable* ht = mht_create_without_register_generic(size, KEY_TYPE_STR, file, line);
+	if (ht == NULL) {
+		mht_errfunc = "_mht_str_create";
+		return NULL;
+	}
+
+	if (UNLIKELY(mht_entries == NULL)) {
+		init();
+	}
+
+	MHtTrackEntry mht_entry = {
 		.ptr = ht
 #ifdef DEBUG
 		,
 		.create_file = file,
 		.create_line = line
+		.key_type = KEY_TYPE_STR
 #endif
 	};
 
-	if (UNLIKELY(!ht_set_without_lock(ht_entries, (key_type)ht, &ht_entry, sizeof(HtTrackEntry), file, line))) {
+	if (UNLIKELY(!mht_uint_set_without_lock(mht_entries, (uint_keyt)ht, &mht_entry, sizeof(MHtTrackEntry), file, line))) {
 		fprintf(stderr, "Failed to set hashtable in hashtable entries.\nFile: %s   Line: %d\n", file, line);
-		ht_errfunc = "_ht_create";
+		mht_errfunc = "_mht_str_create";
 	}
 
 	return ht;
 }
 
 
-HashTable* _ht_create (size_t size, const char* file, int line) {
-	ht_lock();
-	HashTable* ht = ht_create_without_lock(size, file, line);
-	ht_unlock();
+MHashTable* _mht_str_create (size_t size, const char* file, int line) {
+	mht_lock();
+	MHashTable* ht = mht_str_create_without_lock(size, file, line);
+	mht_unlock();
 	return ht;
 }
 
 
-static void* ht_get_without_lock (HashTable* ht, key_type key, const char* file, int line);
+static void* mht_uint_get_without_lock (MHashTable* ht, uint_keyt key, const char* file, int line);
 
-static bool ht_pre_execution_check (HashTable* ht, const char* file, int line) {
+static bool mht_pre_execution_check (MHashTable* ht, const char* file, int line) {
 	if (ht == NULL) {
 		fprintf(stderr, "Hashtable is NULL.\nFile: %s   Line: %d\n", file, line);
 		errno = EINVAL;
 		return false;
 	}
 
-	if (UNLIKELY(ht_entries == NULL)) {
+	if (UNLIKELY(mht_entries == NULL)) {
 		fprintf(stderr, "Hashtable entries are NULL.\nFile: %s   Line: %d\n", file, line);
 		errno = EPERM;
 		return false;
 	}
 
-	if (ht != ht_entries) {
-		HtTrackEntry* ht_entry = ht_get_without_lock(ht_entries, (key_type)ht, file, line);
-		if (ht_entry == NULL) {
+	if (ht != mht_entries) {
+		MHtTrackEntry* mht_entry = mht_uint_get_without_lock(mht_entries, (uint_keyt)ht, file, line);
+		if (mht_entry == NULL) {
 			fprintf(stderr, "Hashtable does not exist in hashtable entries.\nFile: %s   Line: %d\n", file, line);
 			errno = EINVAL;
 			return false;
@@ -262,12 +400,18 @@ static bool ht_pre_execution_check (HashTable* ht, const char* file, int line) {
 }
 
 
-static void ht_destroy_value_choose_delete (HashTable* ht, bool value_delete) {
+static void mht_destroy_value_choose_delete (MHashTable* ht, bool value_delete) {
 	for (size_t i = 0; i < ht->size; i++) {
-		Entry* entry = ht->buckets[i];
+		MHtEntry* entry = ht->buckets[i];
 		while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
-			Entry* next = entry->next;
+			MHtEntry* next = entry->next;
+
+			/* value_delete が true の場合のみ、値を削除 */
 			if (value_delete) free(entry->value);
+
+			/* キーの型が文字列の場合は、キーの文字列のために確保していたメモリブロックを解放 */
+			if (ht->key_type == KEY_TYPE_STR) free(entry->key.str.ptr);
+
 			free(entry);
 			entry = next;
 		}
@@ -277,74 +421,80 @@ static void ht_destroy_value_choose_delete (HashTable* ht, bool value_delete) {
 }
 
 
-static bool ht_delete_without_lock (HashTable* ht, key_type key, const char* file, int line);
+static bool mht_uint_delete_without_lock (MHashTable* ht, uint_keyt key, const char* file, int line);
 
-void _ht_destroy (HashTable* ht, const char* file, int line) {
-	ht_lock();
+void _mht_destroy (MHashTable* ht, const char* file, int line) {
+	mht_lock();
 
-	if (!ht_pre_execution_check(ht, file, line)) {
-		ht_errfunc = "_ht_destroy";
-		ht_unlock();
+	if (!mht_pre_execution_check(ht, file, line)) {
+		mht_errfunc = "_mht_destroy";
+		mht_unlock();
 		return;
 	}
 
-	ht_destroy_value_choose_delete(ht, true);
+	mht_destroy_value_choose_delete(ht, true);
 
-	if (ht != ht_entries)
-		ht_delete_without_lock(ht_entries, (key_type)ht, file, line);
+	if (ht != mht_entries)
+		mht_uint_delete_without_lock(mht_entries, (uint_keyt)ht, file, line);
 
-	ht_unlock();
+	mht_unlock();
 }
 
 
-void _ht_destroy_without_value (HashTable* ht, const char* file, int line) {
-	ht_lock();
+void _mht_destroy_without_value (MHashTable* ht, const char* file, int line) {
+	mht_lock();
 
-	if (!ht_pre_execution_check(ht, file, line)) {
-		ht_errfunc = "_ht_destroy_without_value";
-		ht_unlock();
+	if (!mht_pre_execution_check(ht, file, line)) {
+		mht_errfunc = "_mht_destroy_without_value";
+		mht_unlock();
 		return;
 	}
 
-	ht_destroy_value_choose_delete(ht, false);
+	mht_destroy_value_choose_delete(ht, false);
 
-	if (ht != ht_entries)
-		ht_delete_without_lock(ht_entries, (key_type)ht, file, line);
+	if (ht != mht_entries)
+		mht_uint_delete_without_lock(mht_entries, (uint_keyt)ht, file, line);
 
-	ht_unlock();
+	mht_unlock();
 }
 
 
-static void ht_rehash (HashTable* ht) {
+static void mht_rehash (MHashTable* ht) {
 	if (ht->size > (SIZE_MAX / 2)) {
 		fprintf(stderr, "Hashtable size is too large for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		errno = EIO;
-		ht_errfunc = "ht_rehash";
+		mht_errfunc = "mht_rehash";
 		return;
 	}
 
 	size_t new_size = ht->size * 2;
 
-	if (new_size > (SIZE_MAX / sizeof(Entry*))) {
+	if (new_size > (SIZE_MAX / sizeof(MHtEntry*))) {
 		fprintf(stderr, "Hashtable size is too large for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		errno = EIO;
-		ht_errfunc = "ht_rehash";
+		mht_errfunc = "mht_rehash";
 		return;
 	}
 
-	Entry** new_buckets = calloc(new_size, sizeof(Entry*));  /* 今後の処理のために必ず初期化が必要 */
+	MHtEntry** new_buckets = calloc(new_size, sizeof(MHtEntry*));  /* 今後の処理のために必ず初期化が必要 */
 	if (UNLIKELY(new_buckets == NULL)) {
 		fprintf(stderr, "Failed to allocate memory for rehashing.\nFile: %s   Line: %d\n", __FILE__, __LINE__);
 		errno = ENOMEM;
-		ht_errfunc = "ht_rehash";
+		mht_errfunc = "mht_rehash";
 		return;
 	}
 
 	for (size_t i = 0; i < ht->size; i++) {
-		Entry* entry = ht->buckets[i];
+		MHtEntry* entry = ht->buckets[i];
 		while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
-			Entry* next = entry->next;
-			size_t new_index = hash_key(entry->key, new_size);
+			MHtEntry* next = entry->next;
+
+			size_t new_index;
+			if (ht->key_type == KEY_TYPE_UINT)
+				new_index = hash_uint_key(entry->key.uint, new_size);
+			else  /* if (ht->key_type == KEY_TYPE_STR) */
+				new_index = hash_str_key(entry->key.str, new_size);
+
 			entry->next = new_buckets[new_index];
 			new_buckets[new_index] = entry;
 			entry = next;
@@ -358,12 +508,18 @@ static void ht_rehash (HashTable* ht) {
 
 
 /* value_size が 0 のときに raw モードになる。ロック内で使用すること。 */
-static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, int line) {
-	if (!ht_pre_execution_check(ht, file, line))
+static bool mht_set_generic (MHashTable* ht, KeyUni key, void* value_data, size_t value_size, const char* file, int line) {
+	if (!mht_pre_execution_check(ht, file, line))
 		return false;
 
 	if (value_data == NULL) {
 		fprintf(stderr, "Value pointer is NULL.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		return false;
+	}
+
+	if (ht->key_type != key.key_type) {
+		fprintf(stderr, "Key type mismatch in hashtable.\nFile: %s   Line: %d\n", file, line);
 		errno = EINVAL;
 		return false;
 	}
@@ -374,18 +530,24 @@ static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_
 #endif
 
 	if (UNLIKELY(((double)ht->count / (double)ht->size) > LOAD_FACTOR))
-		ht_rehash(ht);
+		mht_rehash(ht);
 
 #if defined (__GNUC__) && !defined (__clang__)
 	#pragma GCC diagnostic pop
 #endif
 
-	size_t index = hash_key(key, ht->size);
-	Entry* entry = ht->buckets[index];
+	size_t index;
+	if (ht->key_type == KEY_TYPE_UINT)
+		index = hash_uint_key(key.key.uint, ht->size);
+	else  /* if (ht->key_type == KEY_TYPE_STR) */
+		index = hash_str_key(key.key.str, ht->size);
+
+	MHtEntry* entry = ht->buckets[index];
 
 	/* 既存キーを更新（上書き） */
 	while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
-		if (entry->key == key) {
+		if ((ht->key_type == KEY_TYPE_UINT && entry->key.uint == key.key.uint) ||
+			(ht->key_type == KEY_TYPE_STR && str_key_equal(entry->key.str, key.key.str))) {
 			if (value_size != 0) {
 				void* new_value = calloc(1, value_size);
 				if (UNLIKELY(new_value == NULL)) return false;
@@ -397,19 +559,34 @@ static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_
 				free(entry->value);
 				entry->value = value_data;
 			}
+			entry->value_size = value_size;
 			return true;
 		}
 		entry = entry->next;
 	}
 
 	/* 新規追加 */
-	Entry* new_entry = calloc(1, sizeof(Entry));
+	MHtEntry* new_entry = calloc(1, sizeof(MHtEntry));
 	if (UNLIKELY(new_entry == NULL)) return false;
 
-	new_entry->key = key;
+	if (ht->key_type == KEY_TYPE_UINT) {
+		new_entry->key.uint = key.key.uint;
+	} else {  /* if (ht->key_type == KEY_TYPE_STR) */
+		char* key_str = mutils_strndup(key.key.str.ptr, key.key.str.len);
+		if (UNLIKELY(key_str == NULL)) {
+			free(new_entry);
+			errno = ENOMEM;
+			return false;
+		}
+
+		new_entry->key.str.ptr = key_str;
+		new_entry->key.str.len = key.key.str.len;
+	}
+
 	if (value_size != 0) {
 		new_entry->value = calloc(1, value_size);
 		if (UNLIKELY(new_entry->value == NULL)) {
+			if (ht->key_type == KEY_TYPE_STR) free(new_entry->key.str.ptr);
 			free(new_entry);
 			errno = ENOMEM;
 			return false;
@@ -418,6 +595,7 @@ static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_
 	} else {
 		new_entry->value = value_data;
 	}
+	new_entry->value_size = value_size;
 
 	new_entry->next = ht->buckets[index];
 	ht->buckets[index] = new_entry;
@@ -426,138 +604,267 @@ static bool ht_set_generic (HashTable* ht, key_type key, void* value_data, size_
 }
 
 
-static bool ht_set_raw_without_lock (HashTable* ht, key_type key, void* value_data, const char* file, int line) {
+static bool mht_uint_set_raw_without_lock (MHashTable* ht, uint_keyt key, void* value_data, const char* file, int line) {
+	KeyUni key_uni = {
+		.key.uint = key,
+		.key_type = KEY_TYPE_UINT
+	};
+
 	/* value_data に 0 を渡して raw モードに */
-	bool result = ht_set_generic(ht, key, value_data, 0, file, line);
-	if (!result) ht_errfunc = "_ht_set_raw";
+	bool result = mht_set_generic(ht, key_uni, value_data, 0, file, line);
+	if (!result) mht_errfunc = "_mht_uint_set_raw";
 	return result;
 }
 
 
-bool _ht_set_raw (HashTable* ht, key_type key, void* value_data, const char* file, int line) {
-	ht_lock();
-	bool result = ht_set_raw_without_lock(ht, key, value_data, file, line);
-	ht_unlock();
+bool _mht_uint_set_raw (MHashTable* ht, uint_keyt key, void* value_data, const char* file, int line) {
+	mht_lock();
+	bool result = mht_uint_set_raw_without_lock(ht, key, value_data, file, line);
+	mht_unlock();
 	return result;
 }
 
 
-static bool ht_set_without_lock (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, int line) {
-	/* ht_set_generic の value_data に 0 を渡すと raw モードになってしまうので、先に排除しておく */
+static bool mht_uint_set_without_lock (MHashTable* ht, uint_keyt key, void* value_data, size_t value_size, const char* file, int line) {
+	/* mht_set_generic の value_data に 0 を渡すと raw モードになってしまうので、先に排除しておく */
 	if (value_size == 0) {
 		fprintf(stderr, "Value size is zero.\nFile: %s   Line: %d\n", file, line);
 		return false;
 	}
 
-	bool result = ht_set_generic(ht, key, value_data, value_size, file, line);
-	if (!result) ht_errfunc = "_ht_set";
+	KeyUni key_uni = {
+		.key.uint = key,
+		.key_type = KEY_TYPE_UINT
+	};
+
+	bool result = mht_set_generic(ht, key_uni, value_data, value_size, file, line);
+	if (!result) mht_errfunc = "_mht_uint_set";
 	return result;
 }
 
 
-bool _ht_set (HashTable* ht, key_type key, void* value_data, size_t value_size, const char* file, int line) {
-	ht_lock();
-	bool result = ht_set_without_lock(ht, key, value_data, value_size, file, line);
-	ht_unlock();
+bool _mht_uint_set (MHashTable* ht, uint_keyt key, void* value_data, size_t value_size, const char* file, int line) {
+	mht_lock();
+	bool result = mht_uint_set_without_lock(ht, key, value_data, value_size, file, line);
+	mht_unlock();
 	return result;
 }
 
 
-static void* ht_get_without_lock (HashTable* ht, key_type key, const char* file, int line) {
-	if (!ht_pre_execution_check(ht, file, line)) {
-		ht_errfunc = "_ht_get";
+static bool mht_str_set_raw_without_lock (MHashTable* ht, str_keyt key, void* value_data, const char* file, int line) {
+	if (!mht_str_key_is_valid(key)) {
+		fprintf(stderr, "Invalid string key.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		mht_errfunc = "_mht_str_set_raw";
+		return false;
+	}
+
+	KeyUni key_uni = {
+		.key.str = key,
+		.key_type = KEY_TYPE_STR
+	};
+
+	/* value_data に 0 を渡して raw モードに */
+	bool result = mht_set_generic(ht, key_uni, value_data, 0, file, line);
+	if (!result) mht_errfunc = "_mht_str_set_raw";
+	return result;
+}
+
+
+bool _mht_str_set_raw (MHashTable* ht, str_keyt key, void* value_data, const char* file, int line) {
+	mht_lock();
+	bool result = mht_str_set_raw_without_lock(ht, key, value_data, file, line);
+	mht_unlock();
+	return result;
+}
+
+
+static bool mht_str_set_without_lock (MHashTable* ht, str_keyt key, void* value_data, size_t value_size, const char* file, int line) {
+	/* mht_set_generic の value_data に 0 を渡すと raw モードになってしまうので、先に排除しておく */
+	if (value_size == 0) {
+		fprintf(stderr, "Value size is zero.\nFile: %s   Line: %d\n", file, line);
+		return false;
+	}
+
+	if (!mht_str_key_is_valid(key)) {
+		fprintf(stderr, "Invalid string key.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		mht_errfunc = "_mht_str_set";
+		return false;
+	}
+
+	KeyUni key_uni = {
+		.key.str = key,
+		.key_type = KEY_TYPE_STR
+	};
+
+	bool result = mht_set_generic(ht, key_uni, value_data, value_size, file, line);
+	if (!result) mht_errfunc = "_mht_str_set";
+	return result;
+}
+
+
+bool _mht_str_set (MHashTable* ht, str_keyt key, void* value_data, size_t value_size, const char* file, int line) {
+	mht_lock();
+	bool result = mht_str_set_without_lock(ht, key, value_data, value_size, file, line);
+	mht_unlock();
+	return result;
+}
+
+
+static void* mht_get_without_lock_generic (MHashTable* ht, KeyUni key, const char* file, int line) {
+	if (!mht_pre_execution_check(ht, file, line)) return NULL;
+
+	if (ht->key_type != key.key_type) {
+		fprintf(stderr, "Key type mismatch in hashtable.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
 		return NULL;
 	}
 
-	size_t index = hash_key(key, ht->size);
-	Entry* entry = ht->buckets[index];
+	size_t index;
+	if (ht->key_type == KEY_TYPE_UINT)
+		index = hash_uint_key(key.key.uint, ht->size);
+	else  /* if (ht->key_type == KEY_TYPE_STR) */
+		index = hash_str_key(key.key.str, ht->size);
+
+	MHtEntry* entry = ht->buckets[index];
 
 	while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
-		if (entry->key == key)
+		if ((ht->key_type == KEY_TYPE_UINT && entry->key.uint == key.key.uint) ||
+			(ht->key_type == KEY_TYPE_STR && str_key_equal(entry->key.str, key.key.str)))
 			return entry->value;
 		entry = entry->next;
 	}
 
 	fprintf(stderr, "Key not found in hashtable.\nFile: %s   Line: %d\n", file, line);
 	errno = EINVAL;
-	ht_errfunc = "_ht_get";
 	return NULL;
 }
 
 
-void* _ht_get (HashTable* ht, key_type key, const char* file, int line) {
-	ht_lock();
-	void* result = ht_get_without_lock(ht, key, file, line);
-	ht_unlock();
+static void* mht_uint_get_without_lock (MHashTable* ht, uint_keyt key, const char* file, int line) {
+	KeyUni key_uni = {
+		.key.uint = key,
+		.key_type = KEY_TYPE_UINT
+	};
+
+	void* result = mht_get_without_lock_generic(ht, key_uni, file, line);
+	if (result == NULL) mht_errfunc = "_mht_uint_get";
+
 	return result;
 }
 
 
-void** _ht_all_get (HashTable* ht, size_t* out_count, const char* file, int line) {
-	ht_lock();
+void* _mht_uint_get (MHashTable* ht, uint_keyt key, const char* file, int line) {
+	mht_lock();
+	void* result = mht_uint_get_without_lock(ht, key, file, line);
+	mht_unlock();
+	return result;
+}
+
+
+static void* mht_str_get_without_lock (MHashTable* ht, str_keyt key, const char* file, int line) {
+	if (!mht_str_key_is_valid(key)) {
+		fprintf(stderr, "Invalid string key.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		mht_errfunc = "_mht_str_get";
+		return false;
+	}
+
+	KeyUni key_uni = {
+		.key.str = key,
+		.key_type = KEY_TYPE_STR
+	};
+
+	void* result = mht_get_without_lock_generic(ht, key_uni, file, line);
+	if (result == NULL) mht_errfunc = "_mht_str_get";
+
+	return result;
+}
+
+
+void* _mht_str_get (MHashTable* ht, str_keyt key, const char* file, int line) {
+	mht_lock();
+	void* result = mht_str_get_without_lock(ht, key, file, line);
+	mht_unlock();
+	return result;
+}
+
+
+void** _mht_all_get (MHashTable* ht, size_t* out_count, const char* file, int line) {
+	mht_lock();
 
 	if (out_count == NULL) {
 		fprintf(stderr, "Output count pointer is NULL.\nFile: %s   Line: %d\n", file, line);
 		errno = EINVAL;
-		ht_errfunc = "_ht_all_get";
+		mht_errfunc = "_mht_all_get";
 		return NULL;
 	}
 
-	if (!ht_pre_execution_check(ht, file, line)) {
-		ht_errfunc = "_ht_all_get";
-		ht_unlock();
+	if (!mht_pre_execution_check(ht, file, line)) {
+		mht_errfunc = "_mht_all_get";
+		mht_unlock();
 		return NULL;
 	}
 
 	if (ht->count > (SIZE_MAX / sizeof(void*))) {
 		fprintf(stderr, "Hashtable count is too large for all_get.\nFile: %s   Line: %d\n", file, line);
 		errno = EIO;
-		ht_errfunc = "_ht_all_get";
+		mht_errfunc = "_mht_all_get";
 		return NULL;
 	}
 
 	void** values = calloc(ht->count, sizeof(void*));
 	if (UNLIKELY(values == NULL)) {
 		errno = ENOMEM;
-		ht_errfunc = "_ht_all_get";
-		ht_unlock();
+		mht_errfunc = "_mht_all_get";
+		mht_unlock();
 		return NULL;
 	}
 
 	size_t idx = 0;
 	for (size_t i = 0; i < ht->size; ++i) {
-		Entry* entry = ht->buckets[i];
+		MHtEntry* entry = ht->buckets[i];
 		while (entry) {
 			values[idx++] = entry->value;
 			entry = entry->next;
 		}
 	}
 
-	ht_set_raw_without_lock(all_get_arr_entries, (key_type)values, values, file, line);
+	mht_uint_set_raw_without_lock(all_get_arr_entries, (uint_keyt)values, values, file, line);
 
 	*out_count = idx;  /* 正常なら ht->count と等しい */
-	ht_unlock();
+	mht_unlock();
 	return values;
 }
 
 
-bool _ht_all_release_arr (void* values, const char* file, int line) {
-	return _ht_delete(all_get_arr_entries, (key_type)values, file, line);
+bool _mht_all_release_arr (void* values, const char* file, int line) {
+	return _mht_uint_delete(all_get_arr_entries, (uint_keyt)values, file, line);
 }
 
 
-static bool ht_delete_without_lock (HashTable* ht, key_type key, const char* file, int line) {
-	if (!ht_pre_execution_check(ht, file, line)) {
-		ht_errfunc = "_ht_delete";
-		return false;
+static bool mht_delete_without_lock_generic (MHashTable* ht, KeyUni key, const char* file, int line) {
+	if (!mht_pre_execution_check(ht, file, line)) return false;
+
+	if (ht->key_type != key.key_type) {
+		fprintf(stderr, "Key type mismatch in hashtable.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		return NULL;
 	}
 
-	size_t index = hash_key(key, ht->size);
-	Entry* prev = NULL;
-	Entry* entry = ht->buckets[index];
+	size_t index;
+	if (ht->key_type == KEY_TYPE_UINT)
+		index = hash_uint_key(key.key.uint, ht->size);
+	else  /* if (ht->key_type == KEY_TYPE_STR) */
+		index = hash_str_key(key.key.str, ht->size);
+
+	MHtEntry* prev = NULL;
+	MHtEntry* entry = ht->buckets[index];
 
 	while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
-		if (entry->key == key) {
+		if ((ht->key_type == KEY_TYPE_UINT && entry->key.uint == key.key.uint) ||
+			(ht->key_type == KEY_TYPE_STR && str_key_equal(entry->key.str, key.key.str))) {
 			if (prev)
 				prev->next = entry->next;
 			else
@@ -574,36 +881,79 @@ static bool ht_delete_without_lock (HashTable* ht, key_type key, const char* fil
 
 	fprintf(stderr, "Key not found in hashtable.\nFile: %s   Line: %d\n", file, line);
 	errno = EINVAL;
-	ht_errfunc = "_ht_delete";
 	return false;
 }
 
 
-bool _ht_delete (HashTable* ht, key_type key, const char* file, int line) {
-	ht_lock();
-	bool result = ht_delete_without_lock(ht, key, file, line);
-	ht_unlock();
+static bool mht_uint_delete_without_lock (MHashTable* ht, uint_keyt key, const char* file, int line) {
+	KeyUni key_uni = {
+		.key.uint = key,
+		.key_type = KEY_TYPE_UINT
+	};
+
+	bool result = mht_delete_without_lock_generic(ht, key_uni, file, line);
+	if (result == false) mht_errfunc = "_mht_uint_delete";
+
+	return result;
+}
+
+
+bool _mht_uint_delete (MHashTable* ht, uint_keyt key, const char* file, int line) {
+	mht_lock();
+	bool result = mht_uint_delete_without_lock(ht, key, file, line);
+	mht_unlock();
+	return result;
+}
+
+
+static bool mht_str_delete_without_lock (MHashTable* ht, str_keyt key, const char* file, int line) {
+	if (!mht_str_key_is_valid(key)) {
+		fprintf(stderr, "Invalid string key.\nFile: %s   Line: %d\n", file, line);
+		errno = EINVAL;
+		mht_errfunc = "_mht_str_delete";
+		return false;
+	}
+
+	KeyUni key_uni = {
+		.key.str = key,
+		.key_type = KEY_TYPE_STR
+	};
+
+	bool result = mht_delete_without_lock_generic(ht, key_uni, file, line);
+	if (result == false) mht_errfunc = "_mht_str_delete";
+
+	return result;
+}
+
+
+bool _mht_str_delete (MHashTable* ht, str_keyt key, const char* file, int line) {
+	mht_lock();
+	bool result = mht_str_delete_without_lock(ht, key, file, line);
+	mht_unlock();
 	return result;
 }
 
 
 static void quit (void) {
-	_ht_destroy(all_get_arr_entries, __FILE__, __LINE__);
+	_mht_destroy(all_get_arr_entries, __FILE__, __LINE__);
 	all_get_arr_entries = NULL;
 
-	for (size_t i = 0; i < ht_entries->size; i++) {
-		Entry* entry = ht_entries->buckets[i];
+	for (size_t i = 0; i < mht_entries->size; i++) {
+		MHtEntry* entry = mht_entries->buckets[i];
 		while (entry != NULL) {  /* bucketsが確保時に初期化されていることが前提 */
-			Entry* next = entry->next;
+			MHtEntry* next = entry->next;
 #ifdef DEBUG
-			fprintf(stderr, "\nHashtable not destroyed!\nFile: %s   Line: %d\n", ((HtTrackEntry*)entry->value)->create_file, ((HtTrackEntry*)entry->value)->create_line);
+			if (((MHtTrackEntry*)entry->value)->key_type == KEY_TYPE_UINT)
+				fprintf(stderr, "\nHashtable not destroyed!\nKey type: %s\nFile: %s   Line: %d\n", "uint", ((MHtTrackEntry*)entry->value)->create_file, ((MHtTrackEntry*)entry->value)->create_line);
+			else  /* if (((MHtTrackEntry*)entry->value)->key_type == KEY_TYPE_STR) */
+				fprintf(stderr, "\nHashtable not destroyed!\nKey type: %s\nFile: %s   Line: %d\n", "str", ((MHtTrackEntry*)entry->value)->create_file, ((MHtTrackEntry*)entry->value)->create_line);
 #endif
-			_ht_destroy(((HtTrackEntry*)entry->value)->ptr, __FILE__, __LINE__);
+			_mht_destroy(((MHtTrackEntry*)entry->value)->ptr, __FILE__, __LINE__);
 			entry = next;
 		}
 	}
-	_ht_destroy(ht_entries, __FILE__, __LINE__);
-	ht_entries = NULL;
+	_mht_destroy(mht_entries, __FILE__, __LINE__);
+	mht_entries = NULL;
 
 	global_lock_quit();
 }

@@ -1,3 +1,6 @@
-[submodule "libs"]
-	path = libs
+[submodule "libs/global_lock.h"]
+	path = libs/global_lock.h
 	url = https://github.com/kazushiyamasaki/global_lock.h
+[submodule "libs/mutils"]
+	path = libs/mutils
+	url = https://github.com/kazushiyamasaki/mutils
